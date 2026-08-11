@@ -33,12 +33,13 @@ type Conversa struct {
 }
 
 type Disparo struct {
-	ID        int64            `json:"id"`
-	LeadID    int64            `json:"lead_id"`
-	Template  string           `json:"template"`
-	Token     string           `json:"token"`
-	EnviadoEm pgtype.Timestamp `json:"enviado_em"`
-	Status    string           `json:"status"`
+	ID                 int64            `json:"id"`
+	LeadID             int64            `json:"lead_id"`
+	Template           string           `json:"template"`
+	Token              string           `json:"token"`
+	EnviadoEm          pgtype.Timestamp `json:"enviado_em"`
+	Status             string           `json:"status"`
+	NomeEmpreendimento *string          `json:"nome_empreendimento"`
 }
 
 type DlpOcorrencium struct {

@@ -15,7 +15,7 @@ import (
 // vivem em paths distintos para nao precisar adivinhar um campo
 // discriminador no payload -- configure cada um no painel Z-API apontando
 // pro path correspondente (secao 4.4 permite endpoint por webhook).
-func NovoRouter(webhookZAPI *handler.WebhookZAPI) chi.Router {
+func NovoRouter(webhookZAPI *handler.WebhookZAPI, disparo *handler.Disparo, transbordo *handler.Transbordo) chi.Router {
 	r := chi.NewRouter()
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -26,6 +26,9 @@ func NovoRouter(webhookZAPI *handler.WebhookZAPI) chi.Router {
 	r.Post("/webhooks/zapi/mensagens", webhookZAPI.OnMessageReceived)
 	r.Post("/webhooks/zapi/status-mensagem", webhookZAPI.OnMessageStatus)
 	r.Post("/webhooks/zapi/desconexao", webhookZAPI.OnWhatsappDisconnected)
+
+	r.Post("/disparos", disparo.Criar)
+	r.Get("/c/{token}", transbordo.RedirecionarClique)
 
 	return r
 }

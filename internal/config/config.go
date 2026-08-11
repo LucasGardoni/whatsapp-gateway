@@ -19,6 +19,8 @@ type Config struct {
 	MetaAccessToken   string
 
 	MidiaDir string
+
+	PublicBaseURL string
 }
 
 func Load() (*Config, error) {
@@ -33,6 +35,8 @@ func Load() (*Config, error) {
 		MetaAccessToken:   os.Getenv("META_ACCESS_TOKEN"),
 
 		MidiaDir: getEnv("MIDIA_DIR", "./dados/midia"),
+
+		PublicBaseURL: getEnv("PUBLIC_BASE_URL", "http://localhost:8080"),
 	}
 
 	if cfg.DatabaseURL == "" {

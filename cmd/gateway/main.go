@@ -16,6 +16,7 @@ import (
 	"github.com/LucasGardoni/whatsapp-gateway/internal/config"
 	httpserver "github.com/LucasGardoni/whatsapp-gateway/internal/http"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/http/handler"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/identidade"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/outbox"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor/zapi"
@@ -53,7 +54,12 @@ func run() error {
 
 	baixador := midia.NovoBaixador(cfg.MidiaDir)
 	webhookZAPI := handler.NovoWebhookZAPI(pool, baixador)
-	router := httpserver.NovoRouter(webhookZAPI)
+
+	identidadeCliente := identidade.NovoCliente(cfg.ZAPIInstanceID, cfg.ZAPIInstanceToken, cfg.ZAPIClientToken)
+	disparo := handler.NovoDisparo(pool, identidadeCliente, cfg.PublicBaseURL)
+	transbordo := handler.NovoTransbordo(pool)
+
+	router := httpserver.NovoRouter(webhookZAPI, disparo, transbordo)
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,

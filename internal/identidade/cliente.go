@@ -26,6 +26,13 @@ func NovoCliente(instanceID, instanceToken, clientToken string) *Cliente {
 	return novoClienteComBase(baseURLZAPI, instanceID, instanceToken, clientToken)
 }
 
+// NovoClienteComBase e NovoCliente com host configuravel -- usado por
+// testes de integracao de outros pacotes que compoe Cliente (ex.:
+// handler.Disparo) contra um servidor fake em vez da z-api real.
+func NovoClienteComBase(baseURL, instanceID, instanceToken, clientToken string) *Cliente {
+	return novoClienteComBase(baseURL, instanceID, instanceToken, clientToken)
+}
+
 func novoClienteComBase(baseURL, instanceID, instanceToken, clientToken string) *Cliente {
 	return &Cliente{
 		baseURL:       baseURL,
