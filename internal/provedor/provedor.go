@@ -32,3 +32,12 @@ type StatusInstancia struct {
 	SmartphoneConectado bool
 	Detalhe             string
 }
+
+// ErroClassificado e implementado por erros de provedor que sabem dizer se
+// merecem nova tentativa (ex.: zapi.ErroEnvio). Quem consome Provedor (o
+// outbox) usa errors.As contra essa interface -- nunca importa zapi
+// diretamente, senao perde a troca de provedor que justifica esta interface.
+type ErroClassificado interface {
+	error
+	Retentavel() bool
+}

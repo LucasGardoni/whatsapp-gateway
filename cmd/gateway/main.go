@@ -15,6 +15,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/LucasGardoni/whatsapp-gateway/internal/config"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/outbox"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor/zapi"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
 )
 
 func main() {
@@ -42,6 +45,10 @@ func run() error {
 	}
 	defer pool.Close()
 
+	queries := store.New(pool)
+	zapiCliente := zapi.NovoCliente(cfg.ZAPIInstanceID, cfg.ZAPIInstanceToken, cfg.ZAPIClientToken)
+	worker := outbox.NovoWorker(queries, zapiCliente, outbox.Config{})
+
 	router := chi.NewRouter()
 	router.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -63,12 +70,23 @@ func run() error {
 		serverErr <- nil
 	}()
 
+	workerErr := make(chan error, 1)
+	go func() {
+		slog.Info("outbox worker iniciado")
+		workerErr <- worker.Executar(ctx)
+	}()
+
 	select {
 	case <-ctx.Done():
 		slog.Info("sinal de encerramento recebido, iniciando shutdown")
 	case err := <-serverErr:
 		if err != nil {
 			return fmt.Errorf("servidor http: %w", err)
+		}
+		return nil
+	case err := <-workerErr:
+		if err != nil {
+			return fmt.Errorf("outbox worker: %w", err)
 		}
 		return nil
 	}
@@ -82,6 +100,12 @@ func run() error {
 
 	if err := <-serverErr; err != nil {
 		return fmt.Errorf("servidor http: %w", err)
+	}
+
+	// worker.Executar termina o ciclo em andamento e retorna sozinho --
+	// nao precisa de outro timeout aqui (ver Config.TimeoutCiclo).
+	if err := <-workerErr; err != nil {
+		return fmt.Errorf("outbox worker: %w", err)
 	}
 
 	slog.Info("gateway encerrado com sucesso")
