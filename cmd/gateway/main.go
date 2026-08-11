@@ -11,10 +11,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/LucasGardoni/whatsapp-gateway/internal/config"
+	httpserver "github.com/LucasGardoni/whatsapp-gateway/internal/http"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/http/handler"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/outbox"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor/zapi"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
@@ -49,11 +51,9 @@ func run() error {
 	zapiCliente := zapi.NovoCliente(cfg.ZAPIInstanceID, cfg.ZAPIInstanceToken, cfg.ZAPIClientToken)
 	worker := outbox.NovoWorker(queries, zapiCliente, outbox.Config{})
 
-	router := chi.NewRouter()
-	router.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
+	baixador := midia.NovoBaixador(cfg.MidiaDir)
+	webhookZAPI := handler.NovoWebhookZAPI(pool, baixador)
+	router := httpserver.NovoRouter(webhookZAPI)
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,

@@ -53,3 +53,19 @@ type ConteudoDocumento struct {
 	MimeType string `json:"mimeType"`
 	FileName string `json:"fileName"`
 }
+
+// PayloadStatusMensagem e o corpo do webhook on-message-status. IDs vem em
+// lista -- um unico callback pode atualizar varias mensagens de uma vez.
+type PayloadStatusMensagem struct {
+	IDs    []string `json:"ids"`
+	Status string   `json:"status"`
+	Phone  string   `json:"phone"`
+}
+
+// PayloadDesconexao e o corpo do webhook on-whatsapp-disconnected --
+// alimenta provedor_saude (monitor de saude, fase 9).
+type PayloadDesconexao struct {
+	Disconnected bool   `json:"disconnected"`
+	Error        string `json:"error"`
+	InstanceID   string `json:"instanceId"`
+}

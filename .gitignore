@@ -2,5 +2,6 @@
 *.log
 .env
 /bin/
+/dados/
 docs/
 *_test.go

@@ -17,6 +17,8 @@ type Config struct {
 
 	MetaPhoneNumberID string
 	MetaAccessToken   string
+
+	MidiaDir string
 }
 
 func Load() (*Config, error) {
@@ -29,6 +31,8 @@ func Load() (*Config, error) {
 
 		MetaPhoneNumberID: os.Getenv("META_PHONE_NUMBER_ID"),
 		MetaAccessToken:   os.Getenv("META_ACCESS_TOKEN"),
+
+		MidiaDir: getEnv("MIDIA_DIR", "./dados/midia"),
 	}
 
 	if cfg.DatabaseURL == "" {
