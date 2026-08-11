@@ -14,6 +14,9 @@ type Config struct {
 	ZAPIInstanceID    string
 	ZAPIInstanceToken string
 	ZAPIClientToken   string
+
+	MetaPhoneNumberID string
+	MetaAccessToken   string
 }
 
 func Load() (*Config, error) {
@@ -23,6 +26,9 @@ func Load() (*Config, error) {
 		ZAPIInstanceID:    os.Getenv("ZAPI_INSTANCE_ID"),
 		ZAPIInstanceToken: os.Getenv("ZAPI_INSTANCE_TOKEN"),
 		ZAPIClientToken:   os.Getenv("ZAPI_CLIENT_TOKEN"),
+
+		MetaPhoneNumberID: os.Getenv("META_PHONE_NUMBER_ID"),
+		MetaAccessToken:   os.Getenv("META_ACCESS_TOKEN"),
 	}
 
 	if cfg.DatabaseURL == "" {
