@@ -49,8 +49,14 @@ VALUES ($1, 'entrada', $2, $3, $4, $5, $6, $7)
 ON CONFLICT (provedor_msg_id) WHERE provedor_msg_id IS NOT NULL DO NOTHING
 RETURNING id;
 
--- name: AtualizarStatusMensagemPorProvedorMsgID :execrows
-UPDATE mensagem SET status = $2 WHERE provedor_msg_id = $1;
+-- name: AtualizarStatusMensagemPorProvedorMsgID :many
+-- :many em vez de :execrows porque o handler precisa de conversa_id/corretor_id
+-- pra publicar o evento sse (fase 7) -- um callback pode trazer varios ids.
+UPDATE mensagem m
+SET status = $2
+FROM conversa c
+WHERE m.provedor_msg_id = $1 AND c.id = m.conversa_id
+RETURNING m.id, m.conversa_id, c.corretor_id, m.status;
 
 -- name: RegistrarSaudeProvedor :exec
 INSERT INTO provedor_saude (provedor, conectado, latencia_ms, ultimo_erro)

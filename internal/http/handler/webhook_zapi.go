@@ -18,6 +18,7 @@ import (
 	"github.com/LucasGardoni/whatsapp-gateway/internal/matcher"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor/zapi"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/sse"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
 )
 
@@ -32,6 +33,9 @@ const timeoutProcessamento = 30 * time.Second
 type WebhookZAPI struct {
 	pool     *pgxpool.Pool
 	baixador *midia.Baixador
+	// Hub e opcional -- se nil, o webhook processa normalmente mas ninguem
+	// e notificado em tempo real (fase 7).
+	Hub *sse.Hub
 }
 
 func NovoWebhookZAPI(pool *pgxpool.Pool, baixador *midia.Baixador) *WebhookZAPI {
@@ -143,7 +147,7 @@ func (h *WebhookZAPI) processarMensagemRecebida(payloadBrutoID int64, corpo []by
 		return
 	}
 
-	_, err = queries.InserirMensagemEntrada(ctx, store.InserirMensagemEntradaParams{
+	mensagemID, err := queries.InserirMensagemEntrada(ctx, store.InserirMensagemEntradaParams{
 		ConversaID:    conversa.ID,
 		Tipo:          tipo,
 		Texto:         naoVazio(texto),
@@ -163,6 +167,18 @@ func (h *WebhookZAPI) processarMensagemRecebida(payloadBrutoID int64, corpo []by
 
 	if err := tx.Commit(ctx); err != nil {
 		slog.Error("webhook zapi: commit", "erro", err)
+		return
+	}
+
+	// publica so depois do commit -- um corretor nao pode ser notificado
+	// de uma mensagem que a transacao acabou descartando.
+	if h.Hub != nil {
+		h.Hub.Publicar(conversa.CorretorID, sse.Evento{
+			Tipo:       sse.EventoMensagemNova,
+			MensagemID: mensagemID,
+			ConversaID: conversa.ID,
+			Status:     "pendente",
+		})
 	}
 }
 
@@ -205,7 +221,7 @@ func (h *WebhookZAPI) OnMessageStatus(w http.ResponseWriter, r *http.Request) {
 	queries := store.New(h.pool)
 	for _, id := range payload.IDs {
 		id := id
-		linhas, err := queries.AtualizarStatusMensagemPorProvedorMsgID(r.Context(), store.AtualizarStatusMensagemPorProvedorMsgIDParams{
+		atualizadas, err := queries.AtualizarStatusMensagemPorProvedorMsgID(r.Context(), store.AtualizarStatusMensagemPorProvedorMsgIDParams{
 			ProvedorMsgID: &id,
 			Status:        statusInterno,
 		})
@@ -213,8 +229,20 @@ func (h *WebhookZAPI) OnMessageStatus(w http.ResponseWriter, r *http.Request) {
 			slog.Error("webhook zapi: atualizar status da mensagem", "provedor_msg_id", id, "erro", err)
 			continue
 		}
-		if linhas == 0 {
+		if len(atualizadas) == 0 {
 			slog.Warn("webhook zapi: status recebido para mensagem desconhecida", "provedor_msg_id", id)
+			continue
+		}
+		if h.Hub == nil {
+			continue
+		}
+		for _, m := range atualizadas {
+			h.Hub.Publicar(m.CorretorID, sse.Evento{
+				Tipo:       sse.EventoMensagemStatus,
+				MensagemID: m.ID,
+				ConversaID: m.ConversaID,
+				Status:     m.Status,
+			})
 		}
 	}
 

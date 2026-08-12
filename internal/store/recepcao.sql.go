@@ -25,8 +25,12 @@ func (q *Queries) AtualizarLeadDoPayloadBruto(ctx context.Context, arg Atualizar
 	return err
 }
 
-const atualizarStatusMensagemPorProvedorMsgID = `-- name: AtualizarStatusMensagemPorProvedorMsgID :execrows
-UPDATE mensagem SET status = $2 WHERE provedor_msg_id = $1
+const atualizarStatusMensagemPorProvedorMsgID = `-- name: AtualizarStatusMensagemPorProvedorMsgID :many
+UPDATE mensagem m
+SET status = $2
+FROM conversa c
+WHERE m.provedor_msg_id = $1 AND c.id = m.conversa_id
+RETURNING m.id, m.conversa_id, c.corretor_id, m.status
 `
 
 type AtualizarStatusMensagemPorProvedorMsgIDParams struct {
@@ -34,12 +38,38 @@ type AtualizarStatusMensagemPorProvedorMsgIDParams struct {
 	Status        string  `json:"status"`
 }
 
-func (q *Queries) AtualizarStatusMensagemPorProvedorMsgID(ctx context.Context, arg AtualizarStatusMensagemPorProvedorMsgIDParams) (int64, error) {
-	result, err := q.db.Exec(ctx, atualizarStatusMensagemPorProvedorMsgID, arg.ProvedorMsgID, arg.Status)
+type AtualizarStatusMensagemPorProvedorMsgIDRow struct {
+	ID         int64  `json:"id"`
+	ConversaID int64  `json:"conversa_id"`
+	CorretorID *int64 `json:"corretor_id"`
+	Status     string `json:"status"`
+}
+
+// :many em vez de :execrows porque o handler precisa de conversa_id/corretor_id
+// pra publicar o evento sse (fase 7) -- um callback pode trazer varios ids.
+func (q *Queries) AtualizarStatusMensagemPorProvedorMsgID(ctx context.Context, arg AtualizarStatusMensagemPorProvedorMsgIDParams) ([]AtualizarStatusMensagemPorProvedorMsgIDRow, error) {
+	rows, err := q.db.Query(ctx, atualizarStatusMensagemPorProvedorMsgID, arg.ProvedorMsgID, arg.Status)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return result.RowsAffected(), nil
+	defer rows.Close()
+	var items []AtualizarStatusMensagemPorProvedorMsgIDRow
+	for rows.Next() {
+		var i AtualizarStatusMensagemPorProvedorMsgIDRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ConversaID,
+			&i.CorretorID,
+			&i.Status,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const buscarCliqueRecentePorLead = `-- name: BuscarCliqueRecentePorLead :one

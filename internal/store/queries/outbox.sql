@@ -14,7 +14,9 @@ WITH selecionadas AS (
     WHERE m.id = s.id
     RETURNING m.id, m.conversa_id, m.texto, m.tentativas
 )
-SELECT a.id, a.texto, a.tentativas, lead.chat_lid, lead.telefone_e164
+-- conversa_id e corretor_id alimentam a publicacao do evento sse apos o
+-- envio (fase 7) -- sem eles o worker nao sabe pra qual corretor notificar.
+SELECT a.id, a.conversa_id, a.texto, a.tentativas, lead.chat_lid, lead.telefone_e164, c.corretor_id
 FROM atualizadas a
 JOIN conversa c ON c.id = a.conversa_id
 JOIN lead ON lead.id = c.lead_id;

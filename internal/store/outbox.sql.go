@@ -82,7 +82,7 @@ WITH selecionadas AS (
     WHERE m.id = s.id
     RETURNING m.id, m.conversa_id, m.texto, m.tentativas
 )
-SELECT a.id, a.texto, a.tentativas, lead.chat_lid, lead.telefone_e164
+SELECT a.id, a.conversa_id, a.texto, a.tentativas, lead.chat_lid, lead.telefone_e164, c.corretor_id
 FROM atualizadas a
 JOIN conversa c ON c.id = a.conversa_id
 JOIN lead ON lead.id = c.lead_id
@@ -90,14 +90,18 @@ JOIN lead ON lead.id = c.lead_id
 
 type SelecionarPendentesParaEnvioRow struct {
 	ID           int64   `json:"id"`
+	ConversaID   int64   `json:"conversa_id"`
 	Texto        *string `json:"texto"`
 	Tentativas   int32   `json:"tentativas"`
 	ChatLid      *string `json:"chat_lid"`
 	TelefoneE164 *string `json:"telefone_e164"`
+	CorretorID   *int64  `json:"corretor_id"`
 }
 
 // outbox: a fila e a propria tabela mensagem filtrada por status (secao 7).
 // FOR UPDATE SKIP LOCKED evita que dois workers peguem a mesma mensagem.
+// conversa_id e corretor_id alimentam a publicacao do evento sse apos o
+// envio (fase 7) -- sem eles o worker nao sabe pra qual corretor notificar.
 func (q *Queries) SelecionarPendentesParaEnvio(ctx context.Context, limit int32) ([]SelecionarPendentesParaEnvioRow, error) {
 	rows, err := q.db.Query(ctx, selecionarPendentesParaEnvio, limit)
 	if err != nil {
@@ -109,10 +113,12 @@ func (q *Queries) SelecionarPendentesParaEnvio(ctx context.Context, limit int32)
 		var i SelecionarPendentesParaEnvioRow
 		if err := rows.Scan(
 			&i.ID,
+			&i.ConversaID,
 			&i.Texto,
 			&i.Tentativas,
 			&i.ChatLid,
 			&i.TelefoneE164,
+			&i.CorretorID,
 		); err != nil {
 			return nil, err
 		}

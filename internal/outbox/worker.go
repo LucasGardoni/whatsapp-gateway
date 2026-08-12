@@ -12,7 +12,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/LucasGardoni/whatsapp-gateway/internal/dlp"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/sse"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
 )
 
@@ -23,6 +25,8 @@ type Fila interface {
 	MarcarMensagemEnviada(ctx context.Context, arg store.MarcarMensagemEnviadaParams) error
 	MarcarMensagemParaRetentativa(ctx context.Context, arg store.MarcarMensagemParaRetentativaParams) error
 	MarcarMensagemFalhaDefinitiva(ctx context.Context, id int64) error
+	MarcarMensagemBloqueada(ctx context.Context, id int64) error
+	RegistrarOcorrenciaDLP(ctx context.Context, arg store.RegistrarOcorrenciaDLPParams) error
 	ResetarMensagensPresasEmEnvio(ctx context.Context) error
 }
 
@@ -55,11 +59,15 @@ func (c Config) comDefaults() Config {
 type Worker struct {
 	fila     Fila
 	provedor provedor.Provedor
+	dlp      *dlp.Motor
 	cfg      Config
+	// Hub e opcional -- se nil, o worker processa normalmente mas ninguem
+	// e notificado em tempo real (fase 7).
+	Hub *sse.Hub
 }
 
-func NovoWorker(fila Fila, p provedor.Provedor, cfg Config) *Worker {
-	return &Worker{fila: fila, provedor: p, cfg: cfg.comDefaults()}
+func NovoWorker(fila Fila, p provedor.Provedor, motor *dlp.Motor, cfg Config) *Worker {
+	return &Worker{fila: fila, provedor: p, dlp: motor, cfg: cfg.comDefaults()}
 }
 
 // Executar reseta mensagens presas de um restart anterior e entao roda um
@@ -119,13 +127,23 @@ func (w *Worker) processarMensagem(ctx context.Context, m store.SelecionarPenden
 	destino, err := destinatario(m)
 	if err != nil {
 		slog.Error("outbox: mensagem sem destinatario valido, falha definitiva", "mensagem_id", m.ID, "erro", err)
-		w.marcarFalhaDefinitiva(ctx, m.ID)
+		w.marcarFalhaDefinitiva(ctx, m)
 		return
 	}
 
 	if m.Texto == nil {
 		slog.Error("outbox: mensagem sem texto, envio de midia ainda nao suportado", "mensagem_id", m.ID)
-		w.marcarFalhaDefinitiva(ctx, m.ID)
+		w.marcarFalhaDefinitiva(ctx, m)
+		return
+	}
+
+	// dlp roda antes de qualquer entrega ao provedor -- nenhum caminho de
+	// envio pode contornar isso (secao 6, diretriz 10).
+	veredito := w.dlp.Avaliar(*m.Texto)
+	w.registrarOcorrenciasDLP(ctx, m.ID, veredito)
+	if veredito.Bloqueado() {
+		slog.Warn("outbox: mensagem bloqueada pelo dlp", "mensagem_id", m.ID)
+		w.marcarBloqueada(ctx, m)
 		return
 	}
 
@@ -141,7 +159,9 @@ func (w *Worker) processarMensagem(ctx context.Context, m store.SelecionarPenden
 		ZaapID:        naoVazio(resultado.ZaapID),
 	}); err != nil {
 		slog.Error("outbox: falha ao marcar mensagem como enviada", "mensagem_id", m.ID, "erro", err)
+		return
 	}
+	w.publicar(m, "enviada")
 }
 
 func (w *Worker) tratarErroEnvio(ctx context.Context, m store.SelecionarPendentesParaEnvioRow, err error) {
@@ -154,7 +174,7 @@ func (w *Worker) tratarErroEnvio(ctx context.Context, m store.SelecionarPendente
 	tentativasApos := int(m.Tentativas) + 1
 	if !retentavel || tentativasApos >= w.cfg.MaxTentativas {
 		slog.Error("outbox: falha definitiva no envio", "mensagem_id", m.ID, "tentativas", tentativasApos, "erro", err)
-		w.marcarFalhaDefinitiva(ctx, m.ID)
+		w.marcarFalhaDefinitiva(ctx, m)
 		return
 	}
 
@@ -167,10 +187,60 @@ func (w *Worker) tratarErroEnvio(ctx context.Context, m store.SelecionarPendente
 	}
 }
 
-func (w *Worker) marcarFalhaDefinitiva(ctx context.Context, id int64) {
-	if err := w.fila.MarcarMensagemFalhaDefinitiva(ctx, id); err != nil {
-		slog.Error("outbox: falha ao marcar falha definitiva", "mensagem_id", id, "erro", err)
+func (w *Worker) marcarFalhaDefinitiva(ctx context.Context, m store.SelecionarPendentesParaEnvioRow) {
+	if err := w.fila.MarcarMensagemFalhaDefinitiva(ctx, m.ID); err != nil {
+		slog.Error("outbox: falha ao marcar falha definitiva", "mensagem_id", m.ID, "erro", err)
+		return
 	}
+	w.publicar(m, "falha")
+}
+
+func (w *Worker) marcarBloqueada(ctx context.Context, m store.SelecionarPendentesParaEnvioRow) {
+	if err := w.fila.MarcarMensagemBloqueada(ctx, m.ID); err != nil {
+		slog.Error("outbox: falha ao marcar mensagem bloqueada", "mensagem_id", m.ID, "erro", err)
+		return
+	}
+	w.publicar(m, "bloqueada")
+}
+
+// publicar notifica o corretor da conversa via sse -- ver campo Hub.
+// Retentativa (status continua 'pendente') nao publica: nao muda nada
+// que a tela precise refletir ainda.
+func (w *Worker) publicar(m store.SelecionarPendentesParaEnvioRow, status string) {
+	if w.Hub == nil {
+		return
+	}
+	w.Hub.Publicar(m.CorretorID, sse.Evento{
+		Tipo:       sse.EventoMensagemStatus,
+		MensagemID: m.ID,
+		ConversaID: m.ConversaID,
+		Status:     status,
+	})
+}
+
+// registrarOcorrenciasDLP grava avisar/bloquear para o relatorio do
+// supervisor (secao 6). Liberar so vai pro log -- nao precisa de auditoria.
+func (w *Worker) registrarOcorrenciasDLP(ctx context.Context, mensagemID int64, veredito dlp.Resultado) {
+	for _, oc := range veredito.Ocorrencias {
+		if oc.Decisao == dlp.Liberar {
+			slog.Info("outbox: dlp liberou ocorrencia", "mensagem_id", mensagemID, "regra", oc.Regra)
+			continue
+		}
+		if err := w.fila.RegistrarOcorrenciaDLP(ctx, store.RegistrarOcorrenciaDLPParams{
+			MensagemID: mensagemID,
+			Regra:      oc.Regra,
+			Decisao:    string(oc.Decisao),
+			Confianca:  confiancaParaNumeric(oc.Confianca),
+		}); err != nil {
+			slog.Error("outbox: falha ao registrar ocorrencia dlp", "mensagem_id", mensagemID, "regra", oc.Regra, "erro", err)
+		}
+	}
+}
+
+func confiancaParaNumeric(v float64) pgtype.Numeric {
+	var n pgtype.Numeric
+	_ = n.Scan(fmt.Sprintf("%.2f", v))
+	return n
 }
 
 // destinatario prefere chat_lid -- e a identidade primaria do contato

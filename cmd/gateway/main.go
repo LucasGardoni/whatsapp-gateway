@@ -14,12 +14,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/LucasGardoni/whatsapp-gateway/internal/config"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/dlp"
 	httpserver "github.com/LucasGardoni/whatsapp-gateway/internal/http"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/http/handler"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/identidade"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/outbox"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor/zapi"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/sse"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
 )
 
@@ -50,16 +52,32 @@ func run() error {
 
 	queries := store.New(pool)
 	zapiCliente := zapi.NovoCliente(cfg.ZAPIInstanceID, cfg.ZAPIInstanceToken, cfg.ZAPIClientToken)
-	worker := outbox.NovoWorker(queries, zapiCliente, outbox.Config{})
+	motorDLP := dlp.NovoMotor(dlp.Config{
+		DominiosPermitidos: cfg.DLPDominiosPermitidos,
+		SomenteAvisar:      cfg.DLPSomenteAvisar,
+	})
+
+	// hub e tokenStore sao o lado go do tempo real do CRM (fase 7) -- um
+	// so processo, sem pub/sub distribuido (secao 1: instancia unica).
+	hub := sse.NovoHub()
+	tokenStore := sse.NovoTokenStore()
+
+	worker := outbox.NovoWorker(queries, zapiCliente, motorDLP, outbox.Config{})
+	worker.Hub = hub
 
 	baixador := midia.NovoBaixador(cfg.MidiaDir)
 	webhookZAPI := handler.NovoWebhookZAPI(pool, baixador)
+	webhookZAPI.Hub = hub
 
 	identidadeCliente := identidade.NovoCliente(cfg.ZAPIInstanceID, cfg.ZAPIInstanceToken, cfg.ZAPIClientToken)
 	disparo := handler.NovoDisparo(pool, identidadeCliente, cfg.PublicBaseURL)
 	transbordo := handler.NovoTransbordo(pool)
+	mensagens := handler.NovoMensagens(pool)
+	mensagens.Hub = hub
+	sessoesSSE := handler.NovoSessoesSSE(tokenStore)
+	eventos := handler.NovoEventos(hub, tokenStore)
 
-	router := httpserver.NovoRouter(webhookZAPI, disparo, transbordo)
+	router := httpserver.NovoRouter(webhookZAPI, disparo, transbordo, mensagens, sessoesSSE, eventos, cfg.GatewayServiceToken)
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,
