@@ -8,6 +8,13 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type Alertum struct {
+	ID       int64            `json:"id"`
+	Tipo     string           `json:"tipo"`
+	Detalhe  *string          `json:"detalhe"`
+	CriadoEm pgtype.Timestamp `json:"criado_em"`
+}
+
 type CanalInterno struct {
 	ID     int64  `json:"id"`
 	Nome   string `json:"nome"`

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -40,6 +41,10 @@ type Config struct {
 	// DLPSomenteAvisar rebaixa todo bloqueio do dlp para aviso -- liga isso
 	// nas 2 semanas de entrada em producao descritas na secao 6.
 	DLPSomenteAvisar bool
+
+	// RateLimitPorMinuto protege os endpoints publicos (sem token de
+	// servico) contra abuso (fase 12). <= 0 desliga o limite.
+	RateLimitPorMinuto int
 }
 
 func Load() (*Config, error) {
@@ -63,6 +68,8 @@ func Load() (*Config, error) {
 
 		DLPDominiosPermitidos: getLista("DLP_DOMINIOS_PERMITIDOS"),
 		DLPSomenteAvisar:      os.Getenv("DLP_SOMENTE_AVISAR") == "true",
+
+		RateLimitPorMinuto: getInt("RATE_LIMIT_POR_MINUTO", 60),
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -81,6 +88,14 @@ func getEnv(chave, padrao string) string {
 		return v
 	}
 	return padrao
+}
+
+func getInt(chave string, padrao int) int {
+	v, err := strconv.Atoi(os.Getenv(chave))
+	if err != nil {
+		return padrao
+	}
+	return v
 }
 
 // getLista le uma variavel de ambiente separada por virgula. Usada para

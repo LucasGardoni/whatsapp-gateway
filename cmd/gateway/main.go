@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/LucasGardoni/whatsapp-gateway/internal/alerta"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/chatinterno"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/config"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/dlp"
@@ -72,6 +73,8 @@ func run() error {
 
 	pollerChatInterno := chatinterno.NovoPoller(queries, hub, chatinterno.Config{})
 
+	monitorAlerta := alerta.NovoMonitor(queries, alerta.Config{})
+
 	baixador := midia.NovoBaixador(cfg.MidiaDir)
 	webhookZAPI := handler.NovoWebhookZAPI(pool, baixador)
 	webhookZAPI.Hub = hub
@@ -87,7 +90,7 @@ func run() error {
 	leads := handler.NovoLeads(pool, ingestao.RegistroPadrao())
 	leads.VerifyToken = cfg.MetaWebhookVerifyToken
 
-	router := httpserver.NovoRouter(webhookZAPI, disparo, transbordo, mensagens, sessoesSSE, eventos, zapiAdmin, leads, cfg.GatewayServiceToken)
+	router := httpserver.NovoRouter(webhookZAPI, disparo, transbordo, mensagens, sessoesSSE, eventos, zapiAdmin, leads, cfg.GatewayServiceToken, cfg.RateLimitPorMinuto)
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,
@@ -122,6 +125,12 @@ func run() error {
 		chatInternoErr <- pollerChatInterno.Executar(ctx)
 	}()
 
+	alertaErr := make(chan error, 1)
+	go func() {
+		slog.Info("monitor de alerta de volume iniciado")
+		alertaErr <- monitorAlerta.Executar(ctx)
+	}()
+
 	select {
 	case <-ctx.Done():
 		slog.Info("sinal de encerramento recebido, iniciando shutdown")
@@ -143,6 +152,11 @@ func run() error {
 	case err := <-chatInternoErr:
 		if err != nil {
 			return fmt.Errorf("poller de chat interno: %w", err)
+		}
+		return nil
+	case err := <-alertaErr:
+		if err != nil {
+			return fmt.Errorf("monitor de alerta de volume: %w", err)
 		}
 		return nil
 	}
@@ -170,6 +184,10 @@ func run() error {
 
 	if err := <-chatInternoErr; err != nil {
 		return fmt.Errorf("poller de chat interno: %w", err)
+	}
+
+	if err := <-alertaErr; err != nil {
+		return fmt.Errorf("monitor de alerta de volume: %w", err)
 	}
 
 	slog.Info("gateway encerrado com sucesso")

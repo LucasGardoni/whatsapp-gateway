@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/LucasGardoni/whatsapp-gateway/internal/auditoria"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/matcher"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor/zapi"
@@ -176,6 +177,16 @@ func (h *WebhookZAPI) processarMensagemRecebida(payloadBrutoID int64, corpo []by
 	}
 	if err != nil {
 		slog.Error("webhook zapi: inserir mensagem", "erro", err)
+		return
+	}
+
+	// auditoria encadeada por hash (secao 2, defesa no 4, fase 12) -- dentro
+	// da mesma transacao da mensagem, senao o commit da mensagem e o avanco
+	// do cursor da cadeia poderiam divergir num crash entre os dois.
+	if err := auditoria.RegistrarHash(ctx, queries, mensagemID,
+		auditoria.CamposMensagem(mensagemID, conversa.ID, "entrada", tipo, texto, midiaCaminho, payload.MessageID)...,
+	); err != nil {
+		slog.Error("webhook zapi: registrar hash de auditoria", "mensagem_id", mensagemID, "erro", err)
 		return
 	}
 

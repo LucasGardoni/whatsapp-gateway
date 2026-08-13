@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/LucasGardoni/whatsapp-gateway/internal/auditoria"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/sse"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
 )
@@ -56,7 +57,19 @@ func (h *Mensagens) Criar(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	queries := store.New(h.pool)
+
+	// tx envolve criar a mensagem e encadear o hash de auditoria (secao 2,
+	// defesa no 4, fase 12) -- os dois tem que confirmar juntos, senao um
+	// crash entre eles deixa a mensagem sem elo na cadeia.
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		slog.Error("mensagens: iniciar transacao", "erro", err)
+		http.Error(w, "erro interno", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	queries := store.New(tx)
 
 	conversa, err := queries.BuscarConversaPorID(ctx, req.ConversaID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -83,6 +96,23 @@ func (h *Mensagens) Criar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := auditoria.RegistrarHash(ctx, queries, mensagem.ID,
+		auditoria.CamposMensagem(mensagem.ID, mensagem.ConversaID, "saida", "texto", req.Texto, "", "")...,
+	); err != nil {
+		slog.Error("mensagens: registrar hash de auditoria", "mensagem_id", mensagem.ID, "erro", err)
+		http.Error(w, "erro interno", http.StatusInternalServerError)
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		slog.Error("mensagens: commit", "erro", err)
+		http.Error(w, "erro interno", http.StatusInternalServerError)
+		return
+	}
+
+	// publica so depois do commit -- mesmo padrao do webhook zapi, um
+	// corretor nao pode ser notificado de uma mensagem que a transacao
+	// acabou descartando.
 	if h.Hub != nil {
 		h.Hub.Publicar(conversa.CorretorID, sse.Evento{
 			Tipo:       sse.EventoMensagemNova,

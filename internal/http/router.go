@@ -5,6 +5,7 @@ package httpserver
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -31,6 +32,7 @@ func NovoRouter(
 	zapiAdmin *handler.ZAPIAdmin,
 	leads *handler.Leads,
 	tokenServico string,
+	rateLimitPorMinuto int,
 ) chi.Router {
 	r := chi.NewRouter()
 
@@ -39,17 +41,27 @@ func NovoRouter(
 		_, _ = w.Write([]byte("ok"))
 	})
 
-	r.Post("/webhooks/zapi/mensagens", webhookZAPI.OnMessageReceived)
-	r.Post("/webhooks/zapi/status-mensagem", webhookZAPI.OnMessageStatus)
-	r.Post("/webhooks/zapi/desconexao", webhookZAPI.OnWhatsappDisconnected)
+	// endpoints publicos (sem token de servico) sao os que ficam expostos
+	// pra internet -- so eles levam limite por ip (fase 12). /health (load
+	// balancer) e /eventos (autenticado por token curto, conexao longa) nao
+	// entram, senao ficariam artificialmente limitados.
+	limiteRequisicoes := middleware.NovoLimiteRequisicoes(rateLimitPorMinuto, time.Minute)
+	r.Group(func(r chi.Router) {
+		r.Use(limiteRequisicoes.Middleware)
 
-	// webhook generico de ingestao de leads (fase 11) -- GET e o handshake
-	// de verificacao que a Meta exige antes de aceitar mandar POST aqui.
-	r.Get("/webhooks/leads/{origem}", leads.VerificarWebhook)
-	r.Post("/webhooks/leads/{origem}", leads.Webhook)
+		r.Post("/webhooks/zapi/mensagens", webhookZAPI.OnMessageReceived)
+		r.Post("/webhooks/zapi/status-mensagem", webhookZAPI.OnMessageStatus)
+		r.Post("/webhooks/zapi/desconexao", webhookZAPI.OnWhatsappDisconnected)
 
-	r.Post("/disparos", disparo.Criar)
-	r.Get("/c/{token}", transbordo.RedirecionarClique)
+		// webhook generico de ingestao de leads (fase 11) -- GET e o
+		// handshake de verificacao que a Meta exige antes de aceitar
+		// mandar POST aqui.
+		r.Get("/webhooks/leads/{origem}", leads.VerificarWebhook)
+		r.Post("/webhooks/leads/{origem}", leads.Webhook)
+
+		r.Post("/disparos", disparo.Criar)
+		r.Get("/c/{token}", transbordo.RedirecionarClique)
+	})
 
 	r.Get("/eventos", eventos.Servir)
 
