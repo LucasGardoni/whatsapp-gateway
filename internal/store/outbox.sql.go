@@ -7,8 +7,6 @@ package store
 
 import (
 	"context"
-
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const marcarMensagemEnviada = `-- name: MarcarMensagemEnviada :exec
@@ -46,20 +44,30 @@ func (q *Queries) MarcarMensagemFalhaDefinitiva(ctx context.Context, arg MarcarM
 
 const marcarMensagemParaRetentativa = `-- name: MarcarMensagemParaRetentativa :exec
 UPDATE mensagem
-SET status = 'pendente', tentativas = tentativas + 1, tentar_em = $2, ultimo_erro = $3
-WHERE id = $1
+SET status = 'pendente',
+    tentativas = tentativas + 1,
+    tentar_em = LOCALTIMESTAMP + make_interval(secs => $1::double precision),
+    ultimo_erro = $2
+WHERE id = $3
 `
 
 type MarcarMensagemParaRetentativaParams struct {
-	ID         int64            `json:"id"`
-	TentarEm   pgtype.Timestamp `json:"tentar_em"`
-	UltimoErro *string          `json:"ultimo_erro"`
+	AtrasoSegundos float64 `json:"atraso_segundos"`
+	UltimoErro     *string `json:"ultimo_erro"`
+	ID             int64   `json:"id"`
 }
 
 // ultimo_erro fica visivel ao supervisor mesmo antes da falha definitiva
 // (fase 9 -- motivo de shadowban/falha consultavel).
+//
+// tentar_em e calculado aqui, no relogio do banco, e nao no Go: quem le
+// essa coluna e SelecionarPendentesParaEnvio, que compara com
+// LOCALTIMESTAMP. Com o Go mandando o timestamp pronto, os dois lados da
+// comparacao vinham de relogios diferentes e o backoff de 30s virava -3h
+// (retentativa imediata) ou +3h (mensagem parada), dependendo do ambiente
+// -- P1-08 da auditoria. O Go passa a mandar so o atraso.
 func (q *Queries) MarcarMensagemParaRetentativa(ctx context.Context, arg MarcarMensagemParaRetentativaParams) error {
-	_, err := q.db.Exec(ctx, marcarMensagemParaRetentativa, arg.ID, arg.TentarEm, arg.UltimoErro)
+	_, err := q.db.Exec(ctx, marcarMensagemParaRetentativa, arg.AtrasoSegundos, arg.UltimoErro, arg.ID)
 	return err
 }
 

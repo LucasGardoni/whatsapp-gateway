@@ -7,21 +7,23 @@ package store
 
 import (
 	"context"
-
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const buscarAlertaRecente = `-- name: BuscarAlertaRecente :one
-SELECT id, tipo, detalhe, criado_em FROM alerta WHERE tipo = $1 AND criado_em >= $2 ORDER BY criado_em DESC LIMIT 1
+SELECT id, tipo, detalhe, criado_em FROM alerta
+WHERE tipo = $1
+  AND criado_em >= LOCALTIMESTAMP - make_interval(secs => $2::double precision)
+ORDER BY criado_em DESC
+LIMIT 1
 `
 
 type BuscarAlertaRecenteParams struct {
-	Tipo     string           `json:"tipo"`
-	CriadoEm pgtype.Timestamp `json:"criado_em"`
+	Tipo           string  `json:"tipo"`
+	JanelaSegundos float64 `json:"janela_segundos"`
 }
 
 func (q *Queries) BuscarAlertaRecente(ctx context.Context, arg BuscarAlertaRecenteParams) (Alertum, error) {
-	row := q.db.QueryRow(ctx, buscarAlertaRecente, arg.Tipo, arg.CriadoEm)
+	row := q.db.QueryRow(ctx, buscarAlertaRecente, arg.Tipo, arg.JanelaSegundos)
 	var i Alertum
 	err := row.Scan(
 		&i.ID,
@@ -32,16 +34,22 @@ func (q *Queries) BuscarAlertaRecente(ctx context.Context, arg BuscarAlertaRecen
 	return i, err
 }
 
-const contarDestinatariosDistintosDesde = `-- name: ContarDestinatariosDistintosDesde :one
+const contarDestinatariosDistintosNaJanela = `-- name: ContarDestinatariosDistintosNaJanela :one
 SELECT count(DISTINCT c.lead_id) FROM mensagem m
 JOIN conversa c ON c.id = m.conversa_id
-WHERE m.direcao = 'saida' AND m.criado_em >= $1
+WHERE m.direcao = 'saida'
+  AND m.criado_em >= LOCALTIMESTAMP - make_interval(secs => $1::double precision)
 `
 
 // metrica do fator no 1 de banimento (secao 4.8): destinatarios distintos
 // que receberam mensagem de saida numa janela recente.
-func (q *Queries) ContarDestinatariosDistintosDesde(ctx context.Context, criadoEm pgtype.Timestamp) (int64, error) {
-	row := q.db.QueryRow(ctx, contarDestinatariosDistintosDesde, criadoEm)
+// a janela e resolvida no relogio do banco (LOCALTIMESTAMP), nao no Go --
+// criado_em nasce de DEFAULT LOCALTIMESTAMP, entao os dois lados da
+// comparacao tem de vir do mesmo relogio (P1-08). Com o Go mandando o
+// corte pronto, uma diferenca de 3h transformava a janela de 60min em
+// "nada" ou em "quase 4h".
+func (q *Queries) ContarDestinatariosDistintosNaJanela(ctx context.Context, janelaSegundos float64) (int64, error) {
+	row := q.db.QueryRow(ctx, contarDestinatariosDistintosNaJanela, janelaSegundos)
 	var count int64
 	err := row.Scan(&count)
 	return count, err

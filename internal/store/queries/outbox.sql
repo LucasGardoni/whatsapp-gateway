@@ -30,9 +30,19 @@ WHERE id = $1;
 -- name: MarcarMensagemParaRetentativa :exec
 -- ultimo_erro fica visivel ao supervisor mesmo antes da falha definitiva
 -- (fase 9 -- motivo de shadowban/falha consultavel).
+--
+-- tentar_em e calculado aqui, no relogio do banco, e nao no Go: quem le
+-- essa coluna e SelecionarPendentesParaEnvio, que compara com
+-- LOCALTIMESTAMP. Com o Go mandando o timestamp pronto, os dois lados da
+-- comparacao vinham de relogios diferentes e o backoff de 30s virava -3h
+-- (retentativa imediata) ou +3h (mensagem parada), dependendo do ambiente
+-- -- P1-08 da auditoria. O Go passa a mandar so o atraso.
 UPDATE mensagem
-SET status = 'pendente', tentativas = tentativas + 1, tentar_em = $2, ultimo_erro = $3
-WHERE id = $1;
+SET status = 'pendente',
+    tentativas = tentativas + 1,
+    tentar_em = LOCALTIMESTAMP + make_interval(secs => sqlc.arg(atraso_segundos)::double precision),
+    ultimo_erro = sqlc.arg(ultimo_erro)
+WHERE id = sqlc.arg(id);
 
 -- name: MarcarMensagemFalhaDefinitiva :exec
 UPDATE mensagem

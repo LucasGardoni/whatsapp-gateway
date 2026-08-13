@@ -90,7 +90,11 @@ func run() error {
 	leads := handler.NovoLeads(pool, ingestao.RegistroPadrao())
 	leads.VerifyToken = cfg.MetaWebhookVerifyToken
 
-	router := httpserver.NovoRouter(webhookZAPI, disparo, transbordo, mensagens, sessoesSSE, eventos, zapiAdmin, leads, cfg.GatewayServiceToken, cfg.RateLimitPorMinuto)
+	if cfg.WebhookPathSecret == "" {
+		slog.Warn("WEBHOOK_PATH_SECRET vazio: os webhooks de entrada respondem 404 e nada entra no gateway. Nao exponha o gateway na internet sem ele")
+	}
+
+	router := httpserver.NovoRouter(webhookZAPI, disparo, transbordo, mensagens, sessoesSSE, eventos, zapiAdmin, leads, cfg.GatewayServiceToken, cfg.WebhookPathSecret, cfg.RateLimitPorMinuto)
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,

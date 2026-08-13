@@ -7,8 +7,6 @@ package store
 
 import (
 	"context"
-
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const atualizarLeadDoPayloadBruto = `-- name: AtualizarLeadDoPayloadBruto :exec
@@ -74,18 +72,23 @@ func (q *Queries) AtualizarStatusMensagemPorProvedorMsgID(ctx context.Context, a
 
 const buscarCliqueRecentePorLead = `-- name: BuscarCliqueRecentePorLead :one
 SELECT id, token, lead_id, ip, user_agent, clicado_em FROM clique
-WHERE lead_id = $1 AND clicado_em >= $2
+WHERE lead_id = $1
+  AND clicado_em >= LOCALTIMESTAMP - make_interval(secs => $2::double precision)
 ORDER BY clicado_em DESC
 LIMIT 1
 `
 
 type BuscarCliqueRecentePorLeadParams struct {
-	LeadID    *int64           `json:"lead_id"`
-	ClicadoEm pgtype.Timestamp `json:"clicado_em"`
+	LeadID         *int64  `json:"lead_id"`
+	JanelaSegundos float64 `json:"janela_segundos"`
 }
 
+// janela resolvida no relogio do banco (P1-08): clicado_em nasce de
+// DEFAULT LOCALTIMESTAMP. Com o corte vindo do Go, o clique de um cliente
+// que acabou de clicar podia cair fora da janela de 24h -- e a regra 2 do
+// matcher virava regra 3, rebaixando a confianca do casamento sem motivo.
 func (q *Queries) BuscarCliqueRecentePorLead(ctx context.Context, arg BuscarCliqueRecentePorLeadParams) (Clique, error) {
-	row := q.db.QueryRow(ctx, buscarCliqueRecentePorLead, arg.LeadID, arg.ClicadoEm)
+	row := q.db.QueryRow(ctx, buscarCliqueRecentePorLead, arg.LeadID, arg.JanelaSegundos)
 	var i Clique
 	err := row.Scan(
 		&i.ID,

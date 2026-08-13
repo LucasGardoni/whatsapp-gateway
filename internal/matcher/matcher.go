@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/LucasGardoni/whatsapp-gateway/internal/identidade"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
@@ -137,10 +136,11 @@ func adotarChatLid(ctx context.Context, repo Repositorio, lead store.Lead, chatL
 // resultadoPorTelefone distingue a regra 2 da regra 3 -- a diferenca e so a
 // classificacao de confianca (clique recente ou nao); o lead e o mesmo.
 func resultadoPorTelefone(ctx context.Context, repo Repositorio, lead store.Lead) (Resultado, error) {
-	limite := time.Now().Add(-janelaCliqueRecente)
+	// a janela vai como intervalo -- o corte e feito com LOCALTIMESTAMP no
+	// proprio SQL, no mesmo relogio que gravou clicado_em (P1-08).
 	_, err := repo.BuscarCliqueRecentePorLead(ctx, store.BuscarCliqueRecentePorLeadParams{
-		LeadID:    &lead.ID,
-		ClicadoEm: pgtype.Timestamp{Time: limite, Valid: true},
+		LeadID:         &lead.ID,
+		JanelaSegundos: janelaCliqueRecente.Seconds(),
 	})
 	switch {
 	case err == nil:

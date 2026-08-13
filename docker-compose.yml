@@ -5,6 +5,27 @@ services:
       POSTGRES_USER: gateway
       POSTGRES_PASSWORD: gateway
       POSTGRES_DB: whatsapp_gateway
+      # D-1 da auditoria: hora de Brasilia em todos os relogios. Sem isto o
+      # contendor de dev roda em Etc/UTC enquanto o Go e o Postgres de
+      # producao (Windows Server) rodam em UTC-3 -- e quem corrigisse o bug
+      # de fuso olhando so para o dev quebraria a producao (P1-08, secao 4.1).
+      #
+      # ATENCAO: TZ/PGTZ aqui NAO bastam, e enganam quem for verificar.
+      # TZ so muda o relogio do SO do contendor e PGTZ so muda a sessao de um
+      # cliente que rode DENTRO dele (o `docker exec psql`). O que o gateway
+      # pega, conectando de fora sem PGTZ, e o default do servidor, que vive
+      # no postgresql.conf -- escrito uma unica vez pelo initdb. Com o volume
+      # pgdata ja existente, o initdb nao roda de novo e o arquivo continua
+      # em Etc/UTC para sempre. Quem verificar com `docker exec psql` ve
+      # America/Sao_Paulo e conclui, errado, que esta resolvido.
+      TZ: America/Sao_Paulo
+      PGTZ: America/Sao_Paulo
+    # esta linha e que resolve: -c timezone sobrepoe o postgresql.conf a cada
+    # start, entao vale mesmo em volume antigo e sobrevive a recriacao.
+    command: >
+      postgres
+      -c timezone=America/Sao_Paulo
+      -c log_timezone=America/Sao_Paulo
     ports:
       - "5432:5432"
     volumes:

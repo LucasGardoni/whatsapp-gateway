@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
 )
@@ -22,7 +21,7 @@ const TipoVolumeAnormal = "volume_anormal"
 
 // Repositorio e o subconjunto de store.Queries que o monitor precisa.
 type Repositorio interface {
-	ContarDestinatariosDistintosDesde(ctx context.Context, criadoEm pgtype.Timestamp) (int64, error)
+	ContarDestinatariosDistintosNaJanela(ctx context.Context, janelaSegundos float64) (int64, error)
 	BuscarAlertaRecente(ctx context.Context, arg store.BuscarAlertaRecenteParams) (store.Alertum, error)
 	RegistrarAlerta(ctx context.Context, arg store.RegistrarAlertaParams) error
 }
@@ -78,8 +77,10 @@ func (m *Monitor) Executar(ctx context.Context) error {
 // consulta -- so loga e tenta de novo no proximo tick, mesmo padrao do
 // outbox/saude.
 func (m *Monitor) verificar(ctx context.Context) {
-	desde := time.Now().Add(-m.cfg.Janela)
-	total, err := m.repo.ContarDestinatariosDistintosDesde(ctx, pgtype.Timestamp{Time: desde, Valid: true})
+	// janela como intervalo nos dois: o corte sai de LOCALTIMESTAMP no SQL,
+	// no mesmo relogio que gravou criado_em (P1-08).
+	janelaSegundos := m.cfg.Janela.Seconds()
+	total, err := m.repo.ContarDestinatariosDistintosNaJanela(ctx, janelaSegundos)
 	if err != nil {
 		slog.Error("alerta: contar destinatarios distintos", "erro", err)
 		return
@@ -92,8 +93,8 @@ func (m *Monitor) verificar(ctx context.Context) {
 	// mesma janela -- senao cada tick com o volume ainda alto gera uma
 	// linha nova, poluindo o que o supervisor le.
 	_, err = m.repo.BuscarAlertaRecente(ctx, store.BuscarAlertaRecenteParams{
-		Tipo:     TipoVolumeAnormal,
-		CriadoEm: pgtype.Timestamp{Time: desde, Valid: true},
+		Tipo:           TipoVolumeAnormal,
+		JanelaSegundos: janelaSegundos,
 	})
 	if err == nil {
 		return

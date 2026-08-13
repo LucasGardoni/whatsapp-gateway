@@ -7,31 +7,32 @@ package store
 
 import (
 	"context"
-
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const buscarLeadRecenteParaDedup = `-- name: BuscarLeadRecenteParaDedup :one
 SELECT id, nome, telefone_e164, chat_lid, origem, empreendimento_id, lote_id, estado, corretor_id, criado_em, ad_source_id, ctwa_clid FROM lead
 WHERE telefone_e164 = $1
   AND empreendimento_id IS NOT DISTINCT FROM $2
-  AND criado_em >= $3
+  AND criado_em >= LOCALTIMESTAMP - make_interval(secs => $3::double precision)
 ORDER BY criado_em DESC
 LIMIT 1
 `
 
 type BuscarLeadRecenteParaDedupParams struct {
-	TelefoneE164     *string          `json:"telefone_e164"`
-	EmpreendimentoID *int64           `json:"empreendimento_id"`
-	CriadoEm         pgtype.Timestamp `json:"criado_em"`
+	TelefoneE164     *string `json:"telefone_e164"`
+	EmpreendimentoID *int64  `json:"empreendimento_id"`
+	JanelaSegundos   float64 `json:"janela_segundos"`
 }
 
 // dedup da fase 11: mesmo telefone + mesmo empreendimento dentro da janela
 // configuravel e o mesmo lead, nao um novo. empreendimento_id nulo em
 // ambos os lados (IS NOT DISTINCT FROM) tambem casa -- origem sem
 // empreendimento identificado ainda conta como duplicata pelo telefone.
+// janela resolvida no relogio do banco (P1-08) -- com o corte vindo do Go,
+// 3h de diferenca fazia a dedup deixar de casar leads criados na mesma
+// hora, e o mesmo cliente entrava duas vezes na roleta.
 func (q *Queries) BuscarLeadRecenteParaDedup(ctx context.Context, arg BuscarLeadRecenteParaDedupParams) (Lead, error) {
-	row := q.db.QueryRow(ctx, buscarLeadRecenteParaDedup, arg.TelefoneE164, arg.EmpreendimentoID, arg.CriadoEm)
+	row := q.db.QueryRow(ctx, buscarLeadRecenteParaDedup, arg.TelefoneE164, arg.EmpreendimentoID, arg.JanelaSegundos)
 	var i Lead
 	err := row.Scan(
 		&i.ID,

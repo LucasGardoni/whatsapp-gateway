@@ -177,19 +177,20 @@ func (h *Disparo) Reenviar(w http.ResponseWriter, r *http.Request) {
 	janela := tempoParametroHoras(ctx, queries, parametroReenvioJanelaHoras, reenvioJanelaHorasPadrao)
 	maxTentativas := intParametro(ctx, queries, parametroReenvioMaxTentativas, reenvioMaxTentativasPadrao)
 
-	candidatos, err := queries.BuscarLeadsNaoEngajadosParaReenvio(ctx)
+	// a janela e aplicada dentro da query, no relogio do banco (P1-08): o
+	// corte era feito aqui com time.Now(), contra um enviado_em gravado com
+	// LOCALTIMESTAMP. Com 3h de diferenca, ou o reenvio disparava cedo (e o
+	// cliente recebia mensagem repetida pouco depois da primeira), ou
+	// atrasava 3h. O teto de tentativas segue em Go, que nao envolve tempo.
+	candidatos, err := queries.BuscarLeadsNaoEngajadosParaReenvio(ctx, janela.Seconds())
 	if err != nil {
 		slog.Error("disparo: reenvio: buscar candidatos", "erro", err)
 		http.Error(w, "erro interno", http.StatusInternalServerError)
 		return
 	}
 
-	limite := time.Now().Add(-janela)
 	resp := reenviarResponse{}
 	for _, c := range candidatos {
-		if c.UltimoDisparoEm.Time.After(limite) {
-			continue // ainda dentro da janela, cedo demais pra reenviar
-		}
 		if int(c.TotalDisparos) >= maxTentativas {
 			continue // ja tentou o suficiente, nao insiste mais
 		}

@@ -22,6 +22,11 @@ import (
 // por tokenServico (GATEWAY_SERVICE_TOKEN, fase 7). /eventos e o
 // EventSource do browser, autenticado por token curto na query string
 // (ver internal/sse e internal/http/handler/sessoes_sse.go).
+//
+// Os webhooks levam segredoWebhook no path (WEBHOOK_PATH_SECRET) porque
+// quem os chama e um terceiro que nao manda header -- ver
+// middleware.ExigirSegredoPath. Sem esse segredo o gateway nao pode ser
+// exposto na internet: os webhooks sao gravacao de dados sem autenticacao.
 func NovoRouter(
 	webhookZAPI *handler.WebhookZAPI,
 	disparo *handler.Disparo,
@@ -32,6 +37,7 @@ func NovoRouter(
 	zapiAdmin *handler.ZAPIAdmin,
 	leads *handler.Leads,
 	tokenServico string,
+	segredoWebhook string,
 	rateLimitPorMinuto int,
 ) chi.Router {
 	r := chi.NewRouter()
@@ -46,20 +52,30 @@ func NovoRouter(
 	// balancer) e /eventos (autenticado por token curto, conexao longa) nao
 	// entram, senao ficariam artificialmente limitados.
 	limiteRequisicoes := middleware.NovoLimiteRequisicoes(rateLimitPorMinuto, time.Minute)
+	segredo := "/{" + middleware.SegredoPathParam + "}"
+
 	r.Group(func(r chi.Router) {
 		r.Use(limiteRequisicoes.Middleware)
+		r.Use(middleware.ExigirSegredoPath(segredoWebhook))
 
-		r.Post("/webhooks/zapi/mensagens", webhookZAPI.OnMessageReceived)
-		r.Post("/webhooks/zapi/status-mensagem", webhookZAPI.OnMessageStatus)
-		r.Post("/webhooks/zapi/desconexao", webhookZAPI.OnWhatsappDisconnected)
+		r.Post("/webhooks/zapi"+segredo+"/mensagens", webhookZAPI.OnMessageReceived)
+		r.Post("/webhooks/zapi"+segredo+"/status-mensagem", webhookZAPI.OnMessageStatus)
+		r.Post("/webhooks/zapi"+segredo+"/desconexao", webhookZAPI.OnWhatsappDisconnected)
 
 		// webhook generico de ingestao de leads (fase 11) -- GET e o
 		// handshake de verificacao que a Meta exige antes de aceitar
-		// mandar POST aqui.
-		r.Get("/webhooks/leads/{origem}", leads.VerificarWebhook)
-		r.Post("/webhooks/leads/{origem}", leads.Webhook)
+		// mandar POST aqui. O segredo vem antes de {origem} pra que uma
+		// origem nova nao possa ser adicionada sem ele.
+		r.Get("/webhooks/leads"+segredo+"/{origem}", leads.VerificarWebhook)
+		r.Post("/webhooks/leads"+segredo+"/{origem}", leads.Webhook)
+	})
 
-		r.Post("/disparos", disparo.Criar)
+	// /c/{token} e o unico endpoint que um cliente final abre no browser: o
+	// link do transbordo. Nao pode levar segredo no path (o link vai pro
+	// cliente) nem token de servico -- o proprio token do transbordo e a
+	// autenticacao, e e de uso unico.
+	r.Group(func(r chi.Router) {
+		r.Use(limiteRequisicoes.Middleware)
 		r.Get("/c/{token}", transbordo.RedirecionarClique)
 	})
 
@@ -69,6 +85,13 @@ func NovoRouter(
 		r.Use(middleware.ExigirTokenServico(tokenServico))
 		r.Post("/api/mensagens", mensagens.Criar)
 		r.Post("/api/sessoes-sse", sessoesSSE.Criar)
+
+		// /disparos criava token de transbordo e resolvia @lid sem nenhuma
+		// autenticacao (P1-14) -- exposto na internet, um estranho gerava
+		// disparo em nome da empresa. Quem chama e o backend do CRM, entao
+		// o token de servico e o mesmo de /api/*. O path segue sem /api/
+		// por compatibilidade com o que a auditoria documentou.
+		r.Post("/disparos", disparo.Criar)
 
 		// gestao de fila e qr code de reconexao (fase 9) -- painel de
 		// supervisao do CRM, nunca exposto ao browser diretamente.

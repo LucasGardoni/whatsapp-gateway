@@ -15,8 +15,13 @@ SELECT * FROM lead WHERE chat_lid = $1;
 SELECT * FROM lead WHERE telefone_e164 = $1;
 
 -- name: BuscarCliqueRecentePorLead :one
+-- janela resolvida no relogio do banco (P1-08): clicado_em nasce de
+-- DEFAULT LOCALTIMESTAMP. Com o corte vindo do Go, o clique de um cliente
+-- que acabou de clicar podia cair fora da janela de 24h -- e a regra 2 do
+-- matcher virava regra 3, rebaixando a confianca do casamento sem motivo.
 SELECT * FROM clique
-WHERE lead_id = $1 AND clicado_em >= $2
+WHERE lead_id = sqlc.arg(lead_id)
+  AND clicado_em >= LOCALTIMESTAMP - make_interval(secs => sqlc.arg(janela_segundos)::double precision)
 ORDER BY clicado_em DESC
 LIMIT 1;
 

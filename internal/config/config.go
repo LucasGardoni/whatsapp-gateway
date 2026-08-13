@@ -31,9 +31,17 @@ type Config struct {
 	PublicBaseURL string
 
 	// GatewayServiceToken autentica chamadas de servico do CRM (POST
-	// /api/mensagens, POST /api/sessoes-sse -- fase 7). Vazio desliga
-	// esses endpoints (fail closed, ver internal/http/middleware).
+	// /api/mensagens, POST /api/sessoes-sse, POST /disparos -- fase 7).
+	// Vazio desliga esses endpoints (fail closed, ver
+	// internal/http/middleware).
 	GatewayServiceToken string
+
+	// WebhookPathSecret e o segredo compartilhado no path dos webhooks de
+	// entrada (P1-10). Quem chama esses endpoints -- painel da Z-API, Meta,
+	// Zapier -- nao manda header de autenticacao, so uma URL, entao o
+	// segredo vive no path. Vazio devolve 404 nos webhooks (fail closed):
+	// sem ele, expor o gateway na internet e gravacao de dados aberta.
+	WebhookPathSecret string
 
 	// DLPDominiosPermitidos sao os dominios da empresa, alem do host de
 	// PublicBaseURL -- link fora dessa lista e bloqueado (secao 6).
@@ -66,6 +74,8 @@ func Load() (*Config, error) {
 
 		GatewayServiceToken: os.Getenv("GATEWAY_SERVICE_TOKEN"),
 
+		WebhookPathSecret: os.Getenv("WEBHOOK_PATH_SECRET"),
+
 		DLPDominiosPermitidos: getLista("DLP_DOMINIOS_PERMITIDOS"),
 		DLPSomenteAvisar:      os.Getenv("DLP_SOMENTE_AVISAR") == "true",
 
@@ -78,6 +88,14 @@ func Load() (*Config, error) {
 
 	if host := hostDe(cfg.PublicBaseURL); host != "" {
 		cfg.DLPDominiosPermitidos = append(cfg.DLPDominiosPermitidos, host)
+	}
+
+	// o segredo vai virar um segmento de path -- se precisar de escape, a
+	// URL que o operador colar no painel da Z-API nao vai casar com a rota,
+	// e o sintoma aparece como "webhook nao chega" em vez de erro de
+	// configuracao. Melhor falhar aqui.
+	if s := cfg.WebhookPathSecret; s != "" && s != url.PathEscape(s) {
+		return nil, fmt.Errorf("carregar config: WEBHOOK_PATH_SECRET tem caractere que precisa de escape em URL; use apenas [A-Za-z0-9._~-]")
 	}
 
 	return cfg, nil

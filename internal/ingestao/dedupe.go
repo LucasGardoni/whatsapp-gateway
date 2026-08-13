@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
 )
@@ -32,11 +31,12 @@ type Resultado struct {
 // telefone normalizado, dedup nao tem chave pra casar -- sempre cria novo.
 func ResolverOuCriarLead(ctx context.Context, repo Repositorio, e Entrada, janela time.Duration) (Resultado, error) {
 	if e.TelefoneE164 != "" {
-		limite := time.Now().Add(-janela)
+		// janela como intervalo: o corte sai de LOCALTIMESTAMP no SQL, no
+		// mesmo relogio que gravou criado_em (P1-08).
 		lead, err := repo.BuscarLeadRecenteParaDedup(ctx, store.BuscarLeadRecenteParaDedupParams{
 			TelefoneE164:     &e.TelefoneE164,
 			EmpreendimentoID: e.EmpreendimentoID,
-			CriadoEm:         pgtype.Timestamp{Time: limite, Valid: true},
+			JanelaSegundos:   janela.Seconds(),
 		})
 		switch {
 		case err == nil:

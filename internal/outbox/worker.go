@@ -224,11 +224,12 @@ func (w *Worker) tratarErroEnvio(ctx context.Context, m store.SelecionarPendente
 		return
 	}
 
-	tentarEm := time.Now().Add(calcularBackoff(int(m.Tentativas)))
+	// o atraso vai como intervalo e o tentar_em e calculado no relogio do
+	// banco (ver outbox.sql) -- e o banco que compara essa coluna depois.
 	if err := w.fila.MarcarMensagemParaRetentativa(ctx, store.MarcarMensagemParaRetentativaParams{
-		ID:         m.ID,
-		TentarEm:   pgtype.Timestamp{Time: tentarEm, Valid: true},
-		UltimoErro: naoVazio(motivoErro(err)),
+		ID:             m.ID,
+		AtrasoSegundos: calcularBackoff(int(m.Tentativas)).Seconds(),
+		UltimoErro:     naoVazio(motivoErro(err)),
 	}); err != nil {
 		slog.Error("outbox: falha ao reagendar mensagem", "mensagem_id", m.ID, "erro", err)
 	}

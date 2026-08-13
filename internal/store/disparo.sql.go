@@ -45,18 +45,23 @@ func (q *Queries) BuscarDisparoPorToken(ctx context.Context, token string) (Disp
 }
 
 const buscarLeadsNaoEngajadosParaReenvio = `-- name: BuscarLeadsNaoEngajadosParaReenvio :many
-SELECT DISTINCT ON (l.id)
-    l.id AS lead_id,
-    l.telefone_e164,
-    d.template,
-    d.nome_empreendimento,
-    d.enviado_em AS ultimo_disparo_em,
-    (SELECT count(*) FROM disparo WHERE lead_id = l.id) AS total_disparos
-FROM lead l
-JOIN disparo d ON d.lead_id = l.id
-WHERE l.estado IN ('disparado', 'clicou')
-  AND l.telefone_e164 IS NOT NULL
-ORDER BY l.id, d.enviado_em DESC
+WITH ultimo_disparo AS (
+    SELECT DISTINCT ON (l.id)
+        l.id AS lead_id,
+        l.telefone_e164,
+        d.template,
+        d.nome_empreendimento,
+        d.enviado_em AS ultimo_disparo_em,
+        (SELECT count(*) FROM disparo WHERE lead_id = l.id) AS total_disparos
+    FROM lead l
+    JOIN disparo d ON d.lead_id = l.id
+    WHERE l.estado IN ('disparado', 'clicou')
+      AND l.telefone_e164 IS NOT NULL
+    ORDER BY l.id, d.enviado_em DESC
+)
+SELECT lead_id, telefone_e164, template, nome_empreendimento, ultimo_disparo_em, total_disparos
+FROM ultimo_disparo
+WHERE ultimo_disparo_em <= LOCALTIMESTAMP - make_interval(secs => $1::double precision)
 `
 
 type BuscarLeadsNaoEngajadosParaReenvioRow struct {
@@ -74,8 +79,14 @@ type BuscarLeadsNaoEngajadosParaReenvioRow struct {
 // decide se a janela ja estourou. total_disparos alimenta o teto de
 // reenvio (evitar reenviar pra sempre pra quem nunca responde), aplicado
 // em Go, nao aqui -- mais facil de testar com fila falsa.
-func (q *Queries) BuscarLeadsNaoEngajadosParaReenvio(ctx context.Context) ([]BuscarLeadsNaoEngajadosParaReenvioRow, error) {
-	rows, err := q.db.Query(ctx, buscarLeadsNaoEngajadosParaReenvio)
+//
+// A janela passou a ser filtrada aqui, no relogio do banco (P1-08). Tem de
+// ser DEPOIS do DISTINCT ON, num CTE: filtrar dentro do WHERE mudaria a
+// semantica -- um lead com disparo recente casaria pelo disparo ANTIGO
+// dele e seria reenviado cedo demais, incomodando cliente que acabou de
+// receber mensagem. O corte vale sobre o ultimo disparo, so.
+func (q *Queries) BuscarLeadsNaoEngajadosParaReenvio(ctx context.Context, janelaSegundos float64) ([]BuscarLeadsNaoEngajadosParaReenvioRow, error) {
+	rows, err := q.db.Query(ctx, buscarLeadsNaoEngajadosParaReenvio, janelaSegundos)
 	if err != nil {
 		return nil, err
 	}
