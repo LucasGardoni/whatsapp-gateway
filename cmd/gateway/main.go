@@ -13,11 +13,13 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/LucasGardoni/whatsapp-gateway/internal/chatinterno"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/config"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/dlp"
 	httpserver "github.com/LucasGardoni/whatsapp-gateway/internal/http"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/http/handler"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/identidade"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/ingestao"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/outbox"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor/zapi"
@@ -68,6 +70,8 @@ func run() error {
 
 	monitorSaude := saude.NovoMonitor(zapiCliente, queries, saude.Config{NomeProvedor: "zapi"})
 
+	pollerChatInterno := chatinterno.NovoPoller(queries, hub, chatinterno.Config{})
+
 	baixador := midia.NovoBaixador(cfg.MidiaDir)
 	webhookZAPI := handler.NovoWebhookZAPI(pool, baixador)
 	webhookZAPI.Hub = hub
@@ -80,8 +84,10 @@ func run() error {
 	sessoesSSE := handler.NovoSessoesSSE(tokenStore)
 	eventos := handler.NovoEventos(hub, tokenStore)
 	zapiAdmin := handler.NovoZAPIAdmin(zapiCliente)
+	leads := handler.NovoLeads(pool, ingestao.RegistroPadrao())
+	leads.VerifyToken = cfg.MetaWebhookVerifyToken
 
-	router := httpserver.NovoRouter(webhookZAPI, disparo, transbordo, mensagens, sessoesSSE, eventos, zapiAdmin, cfg.GatewayServiceToken)
+	router := httpserver.NovoRouter(webhookZAPI, disparo, transbordo, mensagens, sessoesSSE, eventos, zapiAdmin, leads, cfg.GatewayServiceToken)
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,
@@ -110,6 +116,12 @@ func run() error {
 		saudeErr <- monitorSaude.Executar(ctx)
 	}()
 
+	chatInternoErr := make(chan error, 1)
+	go func() {
+		slog.Info("poller de chat interno iniciado")
+		chatInternoErr <- pollerChatInterno.Executar(ctx)
+	}()
+
 	select {
 	case <-ctx.Done():
 		slog.Info("sinal de encerramento recebido, iniciando shutdown")
@@ -126,6 +138,11 @@ func run() error {
 	case err := <-saudeErr:
 		if err != nil {
 			return fmt.Errorf("monitor de saude: %w", err)
+		}
+		return nil
+	case err := <-chatInternoErr:
+		if err != nil {
+			return fmt.Errorf("poller de chat interno: %w", err)
 		}
 		return nil
 	}
@@ -149,6 +166,10 @@ func run() error {
 
 	if err := <-saudeErr; err != nil {
 		return fmt.Errorf("monitor de saude: %w", err)
+	}
+
+	if err := <-chatInternoErr; err != nil {
+		return fmt.Errorf("poller de chat interno: %w", err)
 	}
 
 	slog.Info("gateway encerrado com sucesso")

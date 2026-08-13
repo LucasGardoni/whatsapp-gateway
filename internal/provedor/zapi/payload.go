@@ -24,6 +24,16 @@ type PayloadRecebido struct {
 	Audio    *ConteudoAudio     `json:"audio,omitempty"`
 	Video    *ConteudoVideo     `json:"video,omitempty"`
 	Document *ConteudoDocumento `json:"document,omitempty"`
+
+	// ExternalAdReply so vem preenchido quando a conversa nasce de um
+	// anuncio click-to-whatsapp (secao 4.5) -- atribuicao de campanha de
+	// graca, persistida no lead mesmo sem uso imediato (fase 11).
+	ExternalAdReply *ExternalAdReply `json:"externalAdReply,omitempty"`
+}
+
+type ExternalAdReply struct {
+	SourceID string `json:"sourceId"`
+	CtwaClid string `json:"ctwaClid"`
 }
 
 type ConteudoTexto struct {

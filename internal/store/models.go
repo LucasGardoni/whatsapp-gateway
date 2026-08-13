@@ -74,6 +74,8 @@ type Lead struct {
 	Estado           string           `json:"estado"`
 	CorretorID       *int64           `json:"corretor_id"`
 	CriadoEm         pgtype.Timestamp `json:"criado_em"`
+	AdSourceID       *string          `json:"ad_source_id"`
+	CtwaClid         *string          `json:"ctwa_clid"`
 }
 
 type LeadPayloadBruto struct {

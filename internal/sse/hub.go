@@ -2,28 +2,33 @@
 // Events (fase 7). Um so processo, um so hub -- nao precisa de pub/sub
 // distribuido (secao 1 do plano: instancia unica).
 //
-// Mensagem interna (fase 10) nao passa por aqui -- e escrita direto pelo
-// CRM em mensagem_interna, sem tocar o gateway (secao 6 do plano: chat
-// interno so compartilha o SSE, nao a tabela). Cobrir esse caso e decisao
-// em aberto, registrada no plano do CRM (secao 7): provavelmente um
-// segundo mecanismo, por polling, e nao este hub em memoria.
+// Mensagem interna (fase 10) nao passa por aqui do lado da escrita -- e
+// gravada direto pelo CRM em mensagem_interna, sem tocar o gateway (secao
+// 6 do plano: chat interno so compartilha o SSE, nao a tabela). O lado da
+// leitura e o internal/chatinterno.Poller: ele faz polling da tabela e usa
+// PublicarTodos abaixo pra entregar no mesmo hub -- quem esta em qual
+// canal/DM e permissao de supervisor (secao 6, pendencia em aberto) e
+// decisao do CRM, o gateway so retransmite pra todo mundo conectado.
 package sse
 
 import "sync"
 
 // Evento e o payload entregue ao browser via EventSource. Tipo distingue
 // mensagem nova (entrada ou saida) de mudanca de status de uma mensagem
-// ja existente.
+// ja existente, ou mensagem interna nova (fase 10). CanalID so e
+// preenchido em EventoMensagemInternaNova.
 type Evento struct {
-	Tipo       string `json:"tipo"` // mensagem_nova | mensagem_status
+	Tipo       string `json:"tipo"` // mensagem_nova | mensagem_status | mensagem_interna_nova
 	MensagemID int64  `json:"mensagem_id"`
-	ConversaID int64  `json:"conversa_id"`
-	Status     string `json:"status"`
+	ConversaID int64  `json:"conversa_id,omitempty"`
+	Status     string `json:"status,omitempty"`
+	CanalID    int64  `json:"canal_id,omitempty"`
 }
 
 const (
-	EventoMensagemNova   = "mensagem_nova"
-	EventoMensagemStatus = "mensagem_status"
+	EventoMensagemNova        = "mensagem_nova"
+	EventoMensagemStatus      = "mensagem_status"
+	EventoMensagemInternaNova = "mensagem_interna_nova"
 )
 
 // tamanhoBufferAssinante evita que o publicador bloqueie por causa de um
@@ -83,6 +88,23 @@ func (h *Hub) Publicar(corretorID *int64, evento Evento) {
 		default:
 			// assinante lento -- descarta em vez de travar o publicador.
 			// o EventSource reconecta e a tela busca o estado atual de novo.
+		}
+	}
+}
+
+// PublicarTodos entrega o evento a todo mundo conectado, independente do
+// corretor -- usado pelo chat interno (fase 10), onde saber quem pertence
+// a qual canal/DM e permissao de supervisor e decisao do CRM (secao 6),
+// nao do gateway. O browser filtra o que e relevante pra tela aberta.
+func (h *Hub) PublicarTodos(evento Evento) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, canais := range h.assinantes {
+		for canal := range canais {
+			select {
+			case canal <- evento:
+			default:
+			}
 		}
 	}
 }

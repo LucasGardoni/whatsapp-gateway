@@ -61,3 +61,11 @@ RETURNING m.id, m.conversa_id, c.corretor_id, m.status;
 -- name: RegistrarSaudeProvedor :exec
 INSERT INTO provedor_saude (provedor, conectado, latencia_ms, ultimo_erro)
 VALUES ($1, $2, $3, $4);
+
+-- name: DefinirAtribuicaoCampanhaDoLead :exec
+-- so preenche se ainda estiver vazio -- atribuicao e sobre a origem, a
+-- primeira mensagem com externalAdReply e que vale (secao 4.5, fase 11).
+UPDATE lead
+SET ad_source_id = COALESCE(ad_source_id, $2),
+    ctwa_clid = COALESCE(ctwa_clid, $3)
+WHERE id = $1;

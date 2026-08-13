@@ -138,6 +138,20 @@ func (h *WebhookZAPI) processarMensagemRecebida(payloadBrutoID int64, corpo []by
 		return
 	}
 
+	// conversa nascida de anuncio click-to-whatsapp -- atribuicao de
+	// campanha de graca (secao 4.5, fase 11). So preenche se ainda estiver
+	// vazio: a query com COALESCE garante que a primeira mensagem com esse
+	// dado e que vale, mesmo que o lead ja exista ha mais tempo.
+	if payload.ExternalAdReply != nil && (payload.ExternalAdReply.SourceID != "" || payload.ExternalAdReply.CtwaClid != "") {
+		if err := queries.DefinirAtribuicaoCampanhaDoLead(ctx, store.DefinirAtribuicaoCampanhaDoLeadParams{
+			ID:         resultado.LeadID,
+			AdSourceID: naoVazio(payload.ExternalAdReply.SourceID),
+			CtwaClid:   naoVazio(payload.ExternalAdReply.CtwaClid),
+		}); err != nil {
+			slog.Error("webhook zapi: definir atribuicao de campanha", "lead_id", resultado.LeadID, "erro", err)
+		}
+	}
+
 	conversa, err := queries.BuscarConversaAbertaPorLead(ctx, resultado.LeadID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		conversa, err = queries.CriarConversa(ctx, resultado.LeadID)

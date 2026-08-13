@@ -20,6 +20,11 @@ type Config struct {
 	MetaPhoneNumberID string
 	MetaAccessToken   string
 
+	// MetaWebhookVerifyToken autentica o handshake GET que a Meta exige
+	// antes de aceitar mandar POST pro webhook de leads (fase 11). Vazio
+	// desliga a verificacao (fail closed, mesmo padrao do GatewayServiceToken).
+	MetaWebhookVerifyToken string
+
 	MidiaDir string
 
 	PublicBaseURL string
@@ -47,6 +52,8 @@ func Load() (*Config, error) {
 
 		MetaPhoneNumberID: os.Getenv("META_PHONE_NUMBER_ID"),
 		MetaAccessToken:   os.Getenv("META_ACCESS_TOKEN"),
+
+		MetaWebhookVerifyToken: os.Getenv("META_WEBHOOK_VERIFY_TOKEN"),
 
 		MidiaDir: getEnv("MIDIA_DIR", "./dados/midia"),
 

@@ -7,6 +7,8 @@ package store
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const atualizarChatLidDoLead = `-- name: AtualizarChatLidDoLead :exec
@@ -40,6 +42,63 @@ func (q *Queries) BuscarDisparoPorToken(ctx context.Context, token string) (Disp
 		&i.NomeEmpreendimento,
 	)
 	return i, err
+}
+
+const buscarLeadsNaoEngajadosParaReenvio = `-- name: BuscarLeadsNaoEngajadosParaReenvio :many
+SELECT DISTINCT ON (l.id)
+    l.id AS lead_id,
+    l.telefone_e164,
+    d.template,
+    d.nome_empreendimento,
+    d.enviado_em AS ultimo_disparo_em,
+    (SELECT count(*) FROM disparo WHERE lead_id = l.id) AS total_disparos
+FROM lead l
+JOIN disparo d ON d.lead_id = l.id
+WHERE l.estado IN ('disparado', 'clicou')
+  AND l.telefone_e164 IS NOT NULL
+ORDER BY l.id, d.enviado_em DESC
+`
+
+type BuscarLeadsNaoEngajadosParaReenvioRow struct {
+	LeadID             int64            `json:"lead_id"`
+	TelefoneE164       *string          `json:"telefone_e164"`
+	Template           string           `json:"template"`
+	NomeEmpreendimento *string          `json:"nome_empreendimento"`
+	UltimoDisparoEm    pgtype.Timestamp `json:"ultimo_disparo_em"`
+	TotalDisparos      int64            `json:"total_disparos"`
+}
+
+// candidatos ao job de reenvio (fase 11): lead que recebeu disparo ou
+// clicou mas nunca chegou a 'engajado'. DISTINCT ON com ORDER BY
+// enviado_em DESC pega o disparo mais recente de cada lead -- e ele que
+// decide se a janela ja estourou. total_disparos alimenta o teto de
+// reenvio (evitar reenviar pra sempre pra quem nunca responde), aplicado
+// em Go, nao aqui -- mais facil de testar com fila falsa.
+func (q *Queries) BuscarLeadsNaoEngajadosParaReenvio(ctx context.Context) ([]BuscarLeadsNaoEngajadosParaReenvioRow, error) {
+	rows, err := q.db.Query(ctx, buscarLeadsNaoEngajadosParaReenvio)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BuscarLeadsNaoEngajadosParaReenvioRow
+	for rows.Next() {
+		var i BuscarLeadsNaoEngajadosParaReenvioRow
+		if err := rows.Scan(
+			&i.LeadID,
+			&i.TelefoneE164,
+			&i.Template,
+			&i.NomeEmpreendimento,
+			&i.UltimoDisparoEm,
+			&i.TotalDisparos,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const criarDisparo = `-- name: CriarDisparo :one

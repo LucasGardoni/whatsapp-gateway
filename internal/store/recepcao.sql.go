@@ -116,7 +116,7 @@ func (q *Queries) BuscarConversaAbertaPorLead(ctx context.Context, leadID int64)
 }
 
 const buscarLeadPorChatLid = `-- name: BuscarLeadPorChatLid :one
-SELECT id, nome, telefone_e164, chat_lid, origem, empreendimento_id, lote_id, estado, corretor_id, criado_em FROM lead WHERE chat_lid = $1
+SELECT id, nome, telefone_e164, chat_lid, origem, empreendimento_id, lote_id, estado, corretor_id, criado_em, ad_source_id, ctwa_clid FROM lead WHERE chat_lid = $1
 `
 
 func (q *Queries) BuscarLeadPorChatLid(ctx context.Context, chatLid *string) (Lead, error) {
@@ -133,12 +133,14 @@ func (q *Queries) BuscarLeadPorChatLid(ctx context.Context, chatLid *string) (Le
 		&i.Estado,
 		&i.CorretorID,
 		&i.CriadoEm,
+		&i.AdSourceID,
+		&i.CtwaClid,
 	)
 	return i, err
 }
 
 const buscarLeadPorTelefone = `-- name: BuscarLeadPorTelefone :one
-SELECT id, nome, telefone_e164, chat_lid, origem, empreendimento_id, lote_id, estado, corretor_id, criado_em FROM lead WHERE telefone_e164 = $1
+SELECT id, nome, telefone_e164, chat_lid, origem, empreendimento_id, lote_id, estado, corretor_id, criado_em, ad_source_id, ctwa_clid FROM lead WHERE telefone_e164 = $1
 `
 
 func (q *Queries) BuscarLeadPorTelefone(ctx context.Context, telefoneE164 *string) (Lead, error) {
@@ -155,12 +157,14 @@ func (q *Queries) BuscarLeadPorTelefone(ctx context.Context, telefoneE164 *strin
 		&i.Estado,
 		&i.CorretorID,
 		&i.CriadoEm,
+		&i.AdSourceID,
+		&i.CtwaClid,
 	)
 	return i, err
 }
 
 const buscarLeadPorTokenNoTexto = `-- name: BuscarLeadPorTokenNoTexto :one
-SELECT l.id, l.nome, l.telefone_e164, l.chat_lid, l.origem, l.empreendimento_id, l.lote_id, l.estado, l.corretor_id, l.criado_em FROM lead l
+SELECT l.id, l.nome, l.telefone_e164, l.chat_lid, l.origem, l.empreendimento_id, l.lote_id, l.estado, l.corretor_id, l.criado_em, l.ad_source_id, l.ctwa_clid FROM lead l
 JOIN disparo d ON d.lead_id = l.id
 WHERE d.token <> '' AND position(d.token IN $1::text) > 0
 ORDER BY d.enviado_em DESC
@@ -184,6 +188,8 @@ func (q *Queries) BuscarLeadPorTokenNoTexto(ctx context.Context, texto string) (
 		&i.Estado,
 		&i.CorretorID,
 		&i.CriadoEm,
+		&i.AdSourceID,
+		&i.CtwaClid,
 	)
 	return i, err
 }
@@ -208,7 +214,7 @@ func (q *Queries) CriarConversa(ctx context.Context, leadID int64) (Conversa, er
 const criarLead = `-- name: CriarLead :one
 INSERT INTO lead (nome, telefone_e164, chat_lid, origem, estado)
 VALUES ($1, $2, $3, $4, 'novo')
-RETURNING id, nome, telefone_e164, chat_lid, origem, empreendimento_id, lote_id, estado, corretor_id, criado_em
+RETURNING id, nome, telefone_e164, chat_lid, origem, empreendimento_id, lote_id, estado, corretor_id, criado_em, ad_source_id, ctwa_clid
 `
 
 type CriarLeadParams struct {
@@ -237,8 +243,30 @@ func (q *Queries) CriarLead(ctx context.Context, arg CriarLeadParams) (Lead, err
 		&i.Estado,
 		&i.CorretorID,
 		&i.CriadoEm,
+		&i.AdSourceID,
+		&i.CtwaClid,
 	)
 	return i, err
+}
+
+const definirAtribuicaoCampanhaDoLead = `-- name: DefinirAtribuicaoCampanhaDoLead :exec
+UPDATE lead
+SET ad_source_id = COALESCE(ad_source_id, $2),
+    ctwa_clid = COALESCE(ctwa_clid, $3)
+WHERE id = $1
+`
+
+type DefinirAtribuicaoCampanhaDoLeadParams struct {
+	ID         int64   `json:"id"`
+	AdSourceID *string `json:"ad_source_id"`
+	CtwaClid   *string `json:"ctwa_clid"`
+}
+
+// so preenche se ainda estiver vazio -- atribuicao e sobre a origem, a
+// primeira mensagem com externalAdReply e que vale (secao 4.5, fase 11).
+func (q *Queries) DefinirAtribuicaoCampanhaDoLead(ctx context.Context, arg DefinirAtribuicaoCampanhaDoLeadParams) error {
+	_, err := q.db.Exec(ctx, definirAtribuicaoCampanhaDoLead, arg.ID, arg.AdSourceID, arg.CtwaClid)
+	return err
 }
 
 const inserirLeadPayloadBruto = `-- name: InserirLeadPayloadBruto :one

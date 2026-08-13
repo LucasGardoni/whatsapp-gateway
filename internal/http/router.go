@@ -29,6 +29,7 @@ func NovoRouter(
 	sessoesSSE *handler.SessoesSSE,
 	eventos *handler.Eventos,
 	zapiAdmin *handler.ZAPIAdmin,
+	leads *handler.Leads,
 	tokenServico string,
 ) chi.Router {
 	r := chi.NewRouter()
@@ -41,6 +42,11 @@ func NovoRouter(
 	r.Post("/webhooks/zapi/mensagens", webhookZAPI.OnMessageReceived)
 	r.Post("/webhooks/zapi/status-mensagem", webhookZAPI.OnMessageStatus)
 	r.Post("/webhooks/zapi/desconexao", webhookZAPI.OnWhatsappDisconnected)
+
+	// webhook generico de ingestao de leads (fase 11) -- GET e o handshake
+	// de verificacao que a Meta exige antes de aceitar mandar POST aqui.
+	r.Get("/webhooks/leads/{origem}", leads.VerificarWebhook)
+	r.Post("/webhooks/leads/{origem}", leads.Webhook)
 
 	r.Post("/disparos", disparo.Criar)
 	r.Get("/c/{token}", transbordo.RedirecionarClique)
@@ -58,6 +64,11 @@ func NovoRouter(
 		r.Delete("/api/zapi/fila", zapiAdmin.LimparFila)
 		r.Delete("/api/zapi/fila/{id}", zapiAdmin.LimparItemFila)
 		r.Get("/api/zapi/qrcode", zapiAdmin.QRCode)
+
+		// job de reenvio e upload de csv (fase 11) -- dono e o supervisor,
+		// a tela que aciona e 100% CRM (ver plano, secao "Fase 11").
+		r.Post("/api/leads/reenvio", disparo.Reenviar)
+		r.Post("/api/leads/importar-csv", leads.ImportarCSV)
 	})
 
 	return r
