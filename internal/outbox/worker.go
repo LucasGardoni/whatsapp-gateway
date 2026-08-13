@@ -40,6 +40,10 @@ type Config struct {
 	TamanhoLote   int32
 	MaxTentativas int
 	TimeoutCiclo  time.Duration
+	// MidiaDir e a raiz a que todo envio de midia fica confinado (P2-18).
+	// Vazio cai no default "./dados/midia", igual ao config.MidiaDir --
+	// nunca vira "leia de qualquer lugar do disco".
+	MidiaDir string
 }
 
 func (c Config) comDefaults() Config {
@@ -54,6 +58,9 @@ func (c Config) comDefaults() Config {
 	}
 	if c.TimeoutCiclo <= 0 {
 		c.TimeoutCiclo = 30 * time.Second
+	}
+	if c.MidiaDir == "" {
+		c.MidiaDir = "./dados/midia"
 	}
 	return c
 }
@@ -195,7 +202,10 @@ func (w *Worker) enviar(ctx context.Context, m store.SelecionarPendentesParaEnvi
 	if m.MidiaCaminho == nil || *m.MidiaCaminho == "" {
 		return nil, fmt.Errorf("mensagem %d: tipo %s sem midia_caminho", m.ID, m.Tipo), false
 	}
-	conteudo, err := midia.CodificarBase64(*m.MidiaCaminho)
+	// confinado a MidiaDir: midia_caminho vem do CRUD de Admin do CRM e nao
+	// e confiavel (P2-18). Caminho fora da raiz cai aqui como valido=false,
+	// ou seja, falha definitiva -- retentar nunca vai permitir o caminho.
+	conteudo, err := midia.CodificarBase64(w.cfg.MidiaDir, *m.MidiaCaminho)
 	if err != nil {
 		return nil, err, false
 	}

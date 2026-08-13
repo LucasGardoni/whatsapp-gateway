@@ -27,22 +27,41 @@ func (q *Queries) BuscarConversaPorID(ctx context.Context, id int64) (Conversa, 
 }
 
 const criarMensagemSaida = `-- name: CriarMensagemSaida :one
-INSERT INTO mensagem (conversa_id, direcao, tipo, texto, provedor)
-VALUES ($1, 'saida', 'texto', $2, 'zapi')
+INSERT INTO mensagem (conversa_id, direcao, tipo, texto, midia_caminho, provedor)
+VALUES (
+    $1,
+    'saida',
+    $2,
+    $3,
+    $4,
+    'zapi'
+)
 RETURNING id, conversa_id, direcao, tipo, texto, midia_caminho, provedor, provedor_msg_id, zaap_id, status, tentativas, tentar_em, payload_bruto, criado_em, hash_anterior, hash, ultimo_erro
 `
 
 type CriarMensagemSaidaParams struct {
-	ConversaID int64   `json:"conversa_id"`
-	Texto      *string `json:"texto"`
+	ConversaID   int64   `json:"conversa_id"`
+	Tipo         string  `json:"tipo"`
+	Texto        *string `json:"texto"`
+	MidiaCaminho *string `json:"midia_caminho"`
 }
 
 // mensagem criada pelo CRM via POST /api/mensagens (fase 7). Direcao e
-// provedor sao fixos: todo atendimento humano sai pelo numero B (zapi),
-// nunca pelo numero A. So texto na v1 -- midia depende do provedor
-// suportar (fase 9).
+// provedor seguem fixos: todo atendimento humano sai pelo numero B (zapi),
+// nunca pelo numero A.
+//
+// tipo e midia_caminho passaram a vir do chamador (fase 3). Antes o tipo
+// era 'texto' fixo aqui: o outbox ja sabia mandar midia desde a fase 9,
+// mas nao havia como o CRM pedir isso -- a legenda ate chegava, o arquivo
+// nao. O handler valida o tipo antes; o CHECK do schema e a rede de
+// seguranca.
 func (q *Queries) CriarMensagemSaida(ctx context.Context, arg CriarMensagemSaidaParams) (Mensagem, error) {
-	row := q.db.QueryRow(ctx, criarMensagemSaida, arg.ConversaID, arg.Texto)
+	row := q.db.QueryRow(ctx, criarMensagemSaida,
+		arg.ConversaID,
+		arg.Tipo,
+		arg.Texto,
+		arg.MidiaCaminho,
+	)
 	var i Mensagem
 	err := row.Scan(
 		&i.ID,

@@ -36,6 +36,15 @@ type Config struct {
 	// internal/http/middleware).
 	GatewayServiceToken string
 
+	// CORSOrigemCRM e a origem exata do CRM (esquema://host:porta) que pode
+	// abrir o EventSource de /eventos. O browser do corretor carrega a
+	// pagina de :8081 e o stream vem de :8080 -- cross-origin, entao sem
+	// Access-Control-Allow-Origin ele aborta antes do primeiro evento
+	// (P0-03). Nunca "*": o token de sessao viaja na query string, e "*"
+	// deixaria qualquer site aberto no browser do corretor ler o stream.
+	// Vazio nao emite o header (dev via curl continua funcionando).
+	CORSOrigemCRM string
+
 	// WebhookPathSecret e o segredo compartilhado no path dos webhooks de
 	// entrada (P1-10). Quem chama esses endpoints -- painel da Z-API, Meta,
 	// Zapier -- nao manda header de autenticacao, so uma URL, entao o
@@ -74,6 +83,8 @@ func Load() (*Config, error) {
 
 		GatewayServiceToken: os.Getenv("GATEWAY_SERVICE_TOKEN"),
 
+		CORSOrigemCRM: os.Getenv("CORS_ORIGEM_CRM"),
+
 		WebhookPathSecret: os.Getenv("WEBHOOK_PATH_SECRET"),
 
 		DLPDominiosPermitidos: getLista("DLP_DOMINIOS_PERMITIDOS"),
@@ -88,6 +99,13 @@ func Load() (*Config, error) {
 
 	if host := hostDe(cfg.PublicBaseURL); host != "" {
 		cfg.DLPDominiosPermitidos = append(cfg.DLPDominiosPermitidos, host)
+	}
+
+	// "*" nunca serve aqui: o token de sessao vai na query string de
+	// /eventos, entao um curinga deixaria qualquer origem ler o stream do
+	// corretor. Melhor recusar na subida do que emitir um header inseguro.
+	if cfg.CORSOrigemCRM == "*" {
+		return nil, fmt.Errorf(`carregar config: CORS_ORIGEM_CRM não pode ser "*"; use a origem exata do CRM (ex.: http://localhost:8081)`)
 	}
 
 	// o segredo vai virar um segmento de path -- se precisar de escape, a

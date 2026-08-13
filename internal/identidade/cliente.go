@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"time"
 )
 
 const baseURLZAPI = "https://api.z-api.io"
@@ -39,16 +41,23 @@ func novoClienteComBase(baseURL, instanceID, instanceToken, clientToken string) 
 		instanceID:    instanceID,
 		instanceToken: instanceToken,
 		clientToken:   clientToken,
-		http:          http.DefaultClient,
+		// resolucao de @lid roda dentro do POST /disparos, que e sincrono
+		// para quem chamou -- sem timeout, a requisicao do CRM ficaria
+		// pendurada junto. Mais curto que os de envio: e so um lookup.
+		http: &http.Client{Timeout: 20 * time.Second},
 	}
 }
 
 // ResultadoLid e a resposta de get-iswhatsapp: se o telefone existe no
 // WhatsApp e, em caso positivo, o @lid correspondente.
 type ResultadoLid struct {
-	Existe   bool
-	Telefone string
-	Lid      string
+	// Resolvido diz se a z-api respondeu algo sobre este telefone. false
+	// significa ausencia de informacao (resposta `null` ou vazia), nao
+	// "telefone inexistente" -- ver decodificarGetIsWhatsapp.
+	Resolvido bool
+	Existe    bool
+	Telefone  string
+	Lid       string
 }
 
 type respostaGetIsWhatsapp struct {
@@ -81,18 +90,42 @@ func (c *Cliente) ResolverLid(ctx context.Context, telefone string) (*ResultadoL
 		return nil, fmt.Errorf("resolver lid %s: status %d da z-api", telefone, resp.StatusCode)
 	}
 
-	var respostas []respostaGetIsWhatsapp
-	if err := json.NewDecoder(resp.Body).Decode(&respostas); err != nil {
-		return nil, fmt.Errorf("resolver lid %s: decodificar resposta: %w", telefone, err)
-	}
-	if len(respostas) == 0 {
-		return nil, fmt.Errorf("resolver lid %s: resposta vazia da z-api", telefone)
+	corpo, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("resolver lid %s: ler resposta: %w", telefone, err)
 	}
 
-	r := respostas[0]
+	r, resolvido := decodificarGetIsWhatsapp(corpo)
 	return &ResultadoLid{
-		Existe:   r.Exists,
-		Telefone: r.Phone,
-		Lid:      r.Lid,
+		Resolvido: resolvido,
+		Existe:    r.Exists,
+		Telefone:  r.Phone,
+		Lid:       r.Lid,
 	}, nil
+}
+
+// decodificarGetIsWhatsapp aceita as tres formas que /contacts/get-iswhatsapp
+// devolve na pratica: array (documentado), objeto unico, e `null` puro com
+// status 200 -- observado em 2026-08-13 num telefone que a z-api simplesmente
+// nao resolveu.
+//
+// resolvido=false significa "a z-api nao respondeu nada sobre este telefone",
+// que e diferente de exists=false ("respondeu que nao esta no WhatsApp"). A
+// distincao importa: o primeiro caso nao e informacao nenhuma e nao deve
+// impedir o disparo; o segundo e um dado de negocio.
+func decodificarGetIsWhatsapp(corpo []byte) (respostaGetIsWhatsapp, bool) {
+	var lista []respostaGetIsWhatsapp
+	if err := json.Unmarshal(corpo, &lista); err == nil {
+		if len(lista) == 0 {
+			return respostaGetIsWhatsapp{}, false
+		}
+		return lista[0], true
+	}
+
+	var unico respostaGetIsWhatsapp
+	if err := json.Unmarshal(corpo, &unico); err == nil {
+		return unico, true
+	}
+
+	return respostaGetIsWhatsapp{}, false
 }

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type Baixador struct {
@@ -19,8 +20,13 @@ type Baixador struct {
 	http      *http.Client
 }
 
+// timeoutDownload limita o download de midia recebida. Roda dentro do
+// processamento do webhook, entao sem limite um servidor de midia lento
+// segura o goroutine indefinidamente -- http.DefaultClient nao tem timeout.
+const timeoutDownload = 60 * time.Second
+
 func NovoBaixador(diretorio string) *Baixador {
-	return &Baixador{diretorio: diretorio, http: http.DefaultClient}
+	return &Baixador{diretorio: diretorio, http: &http.Client{Timeout: timeoutDownload}}
 }
 
 // extensoesConhecidas evita depender do banco de mime types do SO (o

@@ -72,6 +72,44 @@ type PayloadStatusMensagem struct {
 	Phone  string   `json:"phone"`
 }
 
+// PayloadEnvio e o corpo do webhook on-message-send (DeliveryCallback) --
+// o resultado ASSINCRONO de um envio (P1-09).
+//
+// Ele existe porque a z-api aceita o send-text com 200 e so depois reporta
+// que a mensagem nao saiu. Sem esta rota, a deteccao de shadowban dependia
+// de a z-api falhar de forma sincrona na resposta do send-text; o caso do
+// erro chegando depois passava em branco e a mensagem ficava marcada
+// 'enviada' para sempre -- justamente o cenario que custa a reputacao do
+// numero B, que e o ativo mais fragil do projeto.
+type PayloadEnvio struct {
+	// IDs plural para casar com on-message-status: um callback pode
+	// carregar varias mensagens. `id` singular aparece em alguns payloads,
+	// entao os dois sao aceitos -- ver IDsDeMensagem.
+	IDs    []string `json:"ids"`
+	ID     string   `json:"id"`
+	ZaapID string   `json:"zaapId"`
+	// Error vazio significa envio confirmado.
+	Error  string `json:"error"`
+	Status string `json:"status"`
+	Phone  string `json:"phone"`
+}
+
+// IDsDeMensagem normaliza as duas formas em que a z-api identifica a
+// mensagem no callback de envio. Sem isto, a forma singular seria ignorada
+// em silencio e o erro nao chegaria a mensagem nenhuma.
+func (p PayloadEnvio) IDsDeMensagem() []string {
+	if len(p.IDs) > 0 {
+		return p.IDs
+	}
+	if p.ID != "" {
+		return []string{p.ID}
+	}
+	if p.ZaapID != "" {
+		return []string{p.ZaapID}
+	}
+	return nil
+}
+
 // PayloadDesconexao e o corpo do webhook on-whatsapp-disconnected --
 // alimenta provedor_saude (monitor de saude, fase 9).
 type PayloadDesconexao struct {

@@ -25,15 +25,18 @@ func (q *Queries) AtualizarLeadDoPayloadBruto(ctx context.Context, arg Atualizar
 
 const atualizarStatusMensagemPorProvedorMsgID = `-- name: AtualizarStatusMensagemPorProvedorMsgID :many
 UPDATE mensagem m
-SET status = $2
+SET status = $1
 FROM conversa c
-WHERE m.provedor_msg_id = $1 AND c.id = m.conversa_id
+WHERE m.provedor_msg_id = $2
+  AND c.id = m.conversa_id
+  AND array_position(ARRAY['pendente', 'enviando', 'enviada', 'entregue', 'lida'], $1)
+    > array_position(ARRAY['pendente', 'enviando', 'enviada', 'entregue', 'lida'], m.status)
 RETURNING m.id, m.conversa_id, c.corretor_id, m.status
 `
 
 type AtualizarStatusMensagemPorProvedorMsgIDParams struct {
-	ProvedorMsgID *string `json:"provedor_msg_id"`
 	Status        string  `json:"status"`
+	ProvedorMsgID *string `json:"provedor_msg_id"`
 }
 
 type AtualizarStatusMensagemPorProvedorMsgIDRow struct {
@@ -45,8 +48,18 @@ type AtualizarStatusMensagemPorProvedorMsgIDRow struct {
 
 // :many em vez de :execrows porque o handler precisa de conversa_id/corretor_id
 // pra publicar o evento sse (fase 7) -- um callback pode trazer varios ids.
+//
+// Guarda de ordem (P2-15): os callbacks da z-api chegam pela rede e nao tem
+// ordem garantida. Sem esta clausula, um READ que chega antes do RECEIVED
+// deixava a mensagem em 'lida' e o RECEIVED seguinte a REBAIXAVA para
+// 'entregue' -- o corretor via a mensagem "desler" sozinha. So avanca.
+//
+// array_position devolve NULL para status fora da lista, e NULL > x e NULL
+// (nao verdadeiro), entao isto tambem protege os estados terminais de
+// graca: mensagem em 'falha' ou 'bloqueada' nao volta para o fluxo de
+// entrega por causa de um callback atrasado.
 func (q *Queries) AtualizarStatusMensagemPorProvedorMsgID(ctx context.Context, arg AtualizarStatusMensagemPorProvedorMsgIDParams) ([]AtualizarStatusMensagemPorProvedorMsgIDRow, error) {
-	rows, err := q.db.Query(ctx, atualizarStatusMensagemPorProvedorMsgID, arg.ProvedorMsgID, arg.Status)
+	rows, err := q.db.Query(ctx, atualizarStatusMensagemPorProvedorMsgID, arg.Status, arg.ProvedorMsgID)
 	if err != nil {
 		return nil, err
 	}
@@ -324,6 +337,63 @@ func (q *Queries) InserirMensagemEntrada(ctx context.Context, arg InserirMensage
 	var id int64
 	err := row.Scan(&id)
 	return id, err
+}
+
+const marcarFalhaDeEnvioPorProvedorMsgID = `-- name: MarcarFalhaDeEnvioPorProvedorMsgID :many
+UPDATE mensagem m
+SET status = 'falha', ultimo_erro = $1
+FROM conversa c
+WHERE m.provedor_msg_id = $2
+  AND c.id = m.conversa_id
+  AND m.status NOT IN ('entregue', 'lida', 'falha')
+RETURNING m.id, m.conversa_id, c.corretor_id, m.status
+`
+
+type MarcarFalhaDeEnvioPorProvedorMsgIDParams struct {
+	UltimoErro    *string `json:"ultimo_erro"`
+	ProvedorMsgID *string `json:"provedor_msg_id"`
+}
+
+type MarcarFalhaDeEnvioPorProvedorMsgIDRow struct {
+	ID         int64  `json:"id"`
+	ConversaID int64  `json:"conversa_id"`
+	CorretorID *int64 `json:"corretor_id"`
+	Status     string `json:"status"`
+}
+
+// P1-09: resultado assincrono de envio que veio com erro (webhook
+// on-message-send). Marca a mensagem como 'falha' e guarda o motivo, que
+// antes se perdia -- a mensagem ficava 'enviada' para sempre mesmo tendo
+// sido recusada pelo WhatsApp.
+//
+// Nao mexe em mensagem que ja chegou ao destino: se 'entregue' ou 'lida' ja
+// foram confirmados, um callback de erro atrasado esta descrevendo um
+// estado que os fatos ja superaram. Idem para quem ja esta em 'falha'.
+//
+// RETURNING alimenta o evento SSE, igual a AtualizarStatusMensagemPorProvedorMsgID.
+func (q *Queries) MarcarFalhaDeEnvioPorProvedorMsgID(ctx context.Context, arg MarcarFalhaDeEnvioPorProvedorMsgIDParams) ([]MarcarFalhaDeEnvioPorProvedorMsgIDRow, error) {
+	rows, err := q.db.Query(ctx, marcarFalhaDeEnvioPorProvedorMsgID, arg.UltimoErro, arg.ProvedorMsgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []MarcarFalhaDeEnvioPorProvedorMsgIDRow
+	for rows.Next() {
+		var i MarcarFalhaDeEnvioPorProvedorMsgIDRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ConversaID,
+			&i.CorretorID,
+			&i.Status,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const preencherChatLidSeVazio = `-- name: PreencherChatLidSeVazio :exec

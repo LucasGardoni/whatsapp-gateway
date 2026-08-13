@@ -70,10 +70,42 @@ RETURNING id;
 -- name: AtualizarStatusMensagemPorProvedorMsgID :many
 -- :many em vez de :execrows porque o handler precisa de conversa_id/corretor_id
 -- pra publicar o evento sse (fase 7) -- um callback pode trazer varios ids.
+--
+-- Guarda de ordem (P2-15): os callbacks da z-api chegam pela rede e nao tem
+-- ordem garantida. Sem esta clausula, um READ que chega antes do RECEIVED
+-- deixava a mensagem em 'lida' e o RECEIVED seguinte a REBAIXAVA para
+-- 'entregue' -- o corretor via a mensagem "desler" sozinha. So avanca.
+--
+-- array_position devolve NULL para status fora da lista, e NULL > x e NULL
+-- (nao verdadeiro), entao isto tambem protege os estados terminais de
+-- graca: mensagem em 'falha' ou 'bloqueada' nao volta para o fluxo de
+-- entrega por causa de um callback atrasado.
 UPDATE mensagem m
-SET status = $2
+SET status = sqlc.arg(status)
 FROM conversa c
-WHERE m.provedor_msg_id = $1 AND c.id = m.conversa_id
+WHERE m.provedor_msg_id = sqlc.arg(provedor_msg_id)
+  AND c.id = m.conversa_id
+  AND array_position(ARRAY['pendente', 'enviando', 'enviada', 'entregue', 'lida'], sqlc.arg(status))
+    > array_position(ARRAY['pendente', 'enviando', 'enviada', 'entregue', 'lida'], m.status)
+RETURNING m.id, m.conversa_id, c.corretor_id, m.status;
+
+-- name: MarcarFalhaDeEnvioPorProvedorMsgID :many
+-- P1-09: resultado assincrono de envio que veio com erro (webhook
+-- on-message-send). Marca a mensagem como 'falha' e guarda o motivo, que
+-- antes se perdia -- a mensagem ficava 'enviada' para sempre mesmo tendo
+-- sido recusada pelo WhatsApp.
+--
+-- Nao mexe em mensagem que ja chegou ao destino: se 'entregue' ou 'lida' ja
+-- foram confirmados, um callback de erro atrasado esta descrevendo um
+-- estado que os fatos ja superaram. Idem para quem ja esta em 'falha'.
+--
+-- RETURNING alimenta o evento SSE, igual a AtualizarStatusMensagemPorProvedorMsgID.
+UPDATE mensagem m
+SET status = 'falha', ultimo_erro = sqlc.arg(ultimo_erro)
+FROM conversa c
+WHERE m.provedor_msg_id = sqlc.arg(provedor_msg_id)
+  AND c.id = m.conversa_id
+  AND m.status NOT IN ('entregue', 'lida', 'falha')
 RETURNING m.id, m.conversa_id, c.corretor_id, m.status;
 
 -- name: RegistrarSaudeProvedor :exec

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/LucasGardoni/whatsapp-gateway/internal/auditoria"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/http/middleware"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/matcher"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor/zapi"
@@ -151,6 +153,22 @@ func (h *WebhookZAPI) processarMensagemRecebida(payloadBrutoID int64, corpo []by
 		}); err != nil {
 			slog.Error("webhook zapi: definir atribuicao de campanha", "lead_id", resultado.LeadID, "erro", err)
 		}
+	}
+
+	// ciclo de vida (fase 4, decisao D-4): o lead passa a 'engajado'. Quem
+	// marca isso e o gateway, nao o CRM, porque e consequencia direta de a
+	// mensagem chegar -- o CRM segue dono de 'em_atendimento' em diante, e
+	// AvancarEstadoDoLead nunca sobrescreve esses estados (so avanca dentro
+	// de novo->disparado->clicou->engajado).
+	//
+	// Vai na mesma transacao da mensagem: um lead 'engajado' sem a mensagem
+	// que o engajou nao faria sentido para quem le a ficha depois.
+	if err := queries.AvancarEstadoDoLead(ctx, store.AvancarEstadoDoLeadParams{
+		ID:     resultado.LeadID,
+		Estado: "engajado",
+	}); err != nil {
+		slog.Error("webhook zapi: avancar estado do lead para engajado", "lead_id", resultado.LeadID, "erro", err)
+		return
 	}
 
 	conversa, err := queries.BuscarConversaAbertaPorLead(ctx, resultado.LeadID)
@@ -289,6 +307,109 @@ func mapearStatus(statusZAPI string) (string, bool) {
 		return "", false
 	}
 }
+
+// OnMessageSend trata o resultado ASSINCRONO de um envio (on-message-send /
+// DeliveryCallback) -- o P1-09.
+//
+// A z-api aceita o send-text com 200 e pode reportar a falha depois, por
+// aqui. Sem esta rota, a unica deteccao de shadowban era a falha sincrona na
+// resposta do send-text; o erro que chegava atrasado passava em branco e a
+// mensagem ficava marcada 'enviada' para sempre. Como shadowban se detecta
+// olhando falha de envio, isso significava descobrir o problema pelo
+// faturamento, nao pelo sistema.
+//
+// Callback sem erro e confirmacao e nao muda nada: o status de entrega quem
+// conduz e on-message-status, que tem a guarda de ordem (P2-15). Mexer aqui
+// tambem criaria duas fontes para a mesma coluna.
+func (h *WebhookZAPI) OnMessageSend(w http.ResponseWriter, r *http.Request) {
+	var payload zapi.PayloadEnvio
+	if err := json.NewDecoder(io.LimitReader(r.Body, tamanhoMaximoPayload)).Decode(&payload); err != nil {
+		http.Error(w, "payload invalido", http.StatusBadRequest)
+		return
+	}
+
+	log := middleware.LoggerDoContexto(r.Context())
+
+	if payload.Error == "" {
+		log.Debug("webhook zapi: envio confirmado sem erro", "phone", payload.Phone)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	ids := payload.IDsDeMensagem()
+	if len(ids) == 0 {
+		// sem id nao ha o que marcar, mas o erro em si e informacao de
+		// saude do numero -- registrar como alerta e melhor que descartar.
+		log.Warn("webhook zapi: falha de envio sem id de mensagem", "erro_zapi", payload.Error)
+		h.registrarAlertaDeEnvio(r.Context(), log, payload, 0)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	ctx := r.Context()
+	queries := store.New(h.pool)
+
+	for _, id := range ids {
+		id := id
+		afetadas, err := queries.MarcarFalhaDeEnvioPorProvedorMsgID(ctx, store.MarcarFalhaDeEnvioPorProvedorMsgIDParams{
+			ProvedorMsgID: &id,
+			UltimoErro:    naoVazio(payload.Error),
+		})
+		if err != nil {
+			log.Error("webhook zapi: marcar falha de envio", "provedor_msg_id", id, "erro", err)
+			continue
+		}
+		if len(afetadas) == 0 {
+			// mensagem desconhecida, ou que ja chegou ao destino e portanto
+			// nao deve regredir -- ver a query.
+			log.Warn("webhook zapi: falha de envio sem mensagem para atualizar", "provedor_msg_id", id, "erro_zapi", payload.Error)
+			continue
+		}
+
+		for _, m := range afetadas {
+			log.Warn("webhook zapi: envio falhou de forma assincrona",
+				"mensagem_id", m.ID, "provedor_msg_id", id, "erro_zapi", payload.Error)
+			h.registrarAlertaDeEnvio(ctx, log, payload, m.ID)
+
+			if h.Hub != nil {
+				h.Hub.Publicar(m.CorretorID, sse.Evento{
+					Tipo:       sse.EventoMensagemStatus,
+					MensagemID: m.ID,
+					ConversaID: m.ConversaID,
+					Status:     m.Status,
+				})
+			}
+		}
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// registrarAlertaDeEnvio grava na tabela `alerta` para o painel de
+// Supervisao ver. Shadowban ganha tipo proprio porque a acao e diferente:
+// falha comum e um numero ruim, shadowban e o numero B em risco e exige
+// parar os envios.
+func (h *WebhookZAPI) registrarAlertaDeEnvio(ctx context.Context, log *slog.Logger, payload zapi.PayloadEnvio, mensagemID int64) {
+	tipo := tipoAlertaFalhaEnvio
+	if zapi.ClassificarErro(0, payload.Error) == zapi.ErroShadowban {
+		tipo = tipoAlertaShadowban
+	}
+
+	detalhe := fmt.Sprintf("mensagem_id=%d phone=%s erro=%s", mensagemID, payload.Phone, payload.Error)
+	if err := store.New(h.pool).RegistrarAlerta(ctx, store.RegistrarAlertaParams{
+		Tipo:    tipo,
+		Detalhe: naoVazio(detalhe),
+	}); err != nil {
+		log.Error("webhook zapi: registrar alerta de falha de envio", "erro", err)
+	}
+}
+
+// tipos de alerta gravados por esta rota. Strings livres na tabela, mas
+// fixadas aqui para o painel do CRM poder filtrar por elas.
+const (
+	tipoAlertaFalhaEnvio = "falha_envio"
+	tipoAlertaShadowban  = "shadowban"
+)
 
 // OnWhatsappDisconnected alimenta provedor_saude -- consumido pelo
 // dashboard de saude da fase 9.

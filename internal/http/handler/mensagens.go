@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/LucasGardoni/whatsapp-gateway/internal/auditoria"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/sse"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
 )
@@ -22,19 +23,39 @@ import (
 // diretriz 10).
 type Mensagens struct {
 	pool *pgxpool.Pool
+	// midiaDir e a raiz a que todo midia_caminho fica confinado (P2-18).
+	// Validado ja na criacao, e nao so na hora do envio, pra o corretor
+	// receber o erro na hora em vez de a mensagem morrer no outbox.
+	midiaDir string
 	// Hub e opcional -- se nil, a mensagem e criada normalmente mas
 	// ninguem e notificado em tempo real (equivalente a nao ter SSE
 	// configurado ainda).
 	Hub *sse.Hub
 }
 
-func NovoMensagens(pool *pgxpool.Pool) *Mensagens {
-	return &Mensagens{pool: pool}
+func NovoMensagens(pool *pgxpool.Pool, midiaDir string) *Mensagens {
+	return &Mensagens{pool: pool, midiaDir: midiaDir}
+}
+
+// tiposMidiaAceitos sao os valores de mensagem.tipo que levam arquivo. A
+// lista casa com o CHECK do schema (migration 00003) e com o switch de
+// camposEnvioMidia no cliente da z-api -- se divergir, a mensagem e aceita
+// aqui e morre no outbox como "tipo nao suportado", que e o pior lugar
+// para descobrir.
+var tiposMidiaAceitos = map[string]bool{
+	"imagem":    true,
+	"audio":     true,
+	"video":     true,
+	"documento": true,
 }
 
 type criarMensagemRequest struct {
-	ConversaID int64  `json:"conversa_id"`
-	Texto      string `json:"texto"`
+	ConversaID int64 `json:"conversa_id"`
+	// Tipo vazio vira "texto" -- mantem compativel quem ja chamava so com
+	// conversa_id e texto.
+	Tipo         string `json:"tipo"`
+	Texto        string `json:"texto"`
+	MidiaCaminho string `json:"midia_caminho"`
 }
 
 type criarMensagemResponse struct {
@@ -42,8 +63,8 @@ type criarMensagemResponse struct {
 	Status string `json:"status"`
 }
 
-// Criar so aceita texto na v1 -- envio de midia depende do provedor
-// suportar (fase 9, ver plano do gateway).
+// Criar aceita texto e midia (fase 3). Para midia, texto e a legenda e e
+// opcional; para texto, ele e o proprio conteudo e e obrigatorio.
 func (h *Mensagens) Criar(w http.ResponseWriter, r *http.Request) {
 	var req criarMensagemRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, tamanhoMaximoPayload)).Decode(&req); err != nil {
@@ -51,8 +72,42 @@ func (h *Mensagens) Criar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Texto = strings.TrimSpace(req.Texto)
-	if req.ConversaID == 0 || req.Texto == "" {
-		http.Error(w, "conversa_id e texto sao obrigatorios", http.StatusBadRequest)
+	req.Tipo = strings.TrimSpace(req.Tipo)
+	req.MidiaCaminho = strings.TrimSpace(req.MidiaCaminho)
+
+	if req.Tipo == "" {
+		req.Tipo = "texto"
+	}
+	if req.ConversaID == 0 {
+		http.Error(w, "conversa_id e obrigatorio", http.StatusBadRequest)
+		return
+	}
+
+	switch {
+	case req.Tipo == "texto":
+		if req.Texto == "" {
+			http.Error(w, "texto e obrigatorio para tipo texto", http.StatusBadRequest)
+			return
+		}
+		if req.MidiaCaminho != "" {
+			http.Error(w, "midia_caminho nao se aplica ao tipo texto", http.StatusBadRequest)
+			return
+		}
+	case tiposMidiaAceitos[req.Tipo]:
+		if req.MidiaCaminho == "" {
+			http.Error(w, "midia_caminho e obrigatorio para tipo "+req.Tipo, http.StatusBadRequest)
+			return
+		}
+		// confinado a MIDIA_DIR aqui, na entrada, e nao so no outbox
+		// (P2-18/D-3): assim o corretor ve o erro na resposta em vez de a
+		// mensagem entrar na fila e falhar em silencio depois.
+		if _, err := midia.ResolverDentroDe(h.midiaDir, req.MidiaCaminho); err != nil {
+			slog.Warn("mensagens: midia_caminho recusado", "conversa_id", req.ConversaID, "erro", err)
+			http.Error(w, "midia_caminho fora do diretorio de midia permitido", http.StatusBadRequest)
+			return
+		}
+	default:
+		http.Error(w, "tipo invalido: use texto, imagem, audio, video ou documento", http.StatusBadRequest)
 		return
 	}
 
@@ -87,8 +142,10 @@ func (h *Mensagens) Criar(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mensagem, err := queries.CriarMensagemSaida(ctx, store.CriarMensagemSaidaParams{
-		ConversaID: req.ConversaID,
-		Texto:      &req.Texto,
+		ConversaID:   req.ConversaID,
+		Tipo:         req.Tipo,
+		Texto:        naoVazio(req.Texto),
+		MidiaCaminho: naoVazio(req.MidiaCaminho),
 	})
 	if err != nil {
 		slog.Error("mensagens: criar mensagem de saida", "conversa_id", req.ConversaID, "erro", err)
@@ -96,8 +153,11 @@ func (h *Mensagens) Criar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// o hash cobre tipo e caminho reais, nao "texto"/"" fixos: senao duas
+	// mensagens com a mesma legenda e arquivos diferentes teriam o mesmo
+	// elo, e a cadeia deixaria de provar o que foi de fato enviado.
 	if err := auditoria.RegistrarHash(ctx, queries, mensagem.ID,
-		auditoria.CamposMensagem(mensagem.ID, mensagem.ConversaID, "saida", "texto", req.Texto, "", "")...,
+		auditoria.CamposMensagem(mensagem.ID, mensagem.ConversaID, "saida", req.Tipo, req.Texto, req.MidiaCaminho, "")...,
 	); err != nil {
 		slog.Error("mensagens: registrar hash de auditoria", "mensagem_id", mensagem.ID, "erro", err)
 		http.Error(w, "erro interno", http.StatusInternalServerError)

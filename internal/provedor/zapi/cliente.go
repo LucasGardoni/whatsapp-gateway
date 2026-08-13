@@ -3,17 +3,24 @@ package zapi
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor"
 )
 
 const baseURLZAPI = "https://api.z-api.io"
+
+// timeoutRequisicao limita cada chamada a z-api. Generoso porque envio de
+// midia manda o arquivo inteiro em base64 no corpo (secao 4.9), mas finito
+// -- o objetivo e nao existir caminho onde o worker fique preso.
+const timeoutRequisicao = 60 * time.Second
 
 // Cliente implementa provedor.Provedor para o numero B. Credenciais vem
 // sempre de config (variavel de ambiente) -- nunca em codigo.
@@ -45,7 +52,10 @@ func novoClienteComBase(baseURL, instanceID, instanceToken, clientToken string) 
 		instanceID:    instanceID,
 		instanceToken: instanceToken,
 		clientToken:   clientToken,
-		http:          http.DefaultClient,
+		// http.DefaultClient nao tem timeout: uma conexao que a z-api
+		// aceita e nunca responde penduraria o ciclo do outbox para
+		// sempre, e com ele toda a fila de saida.
+		http: &http.Client{Timeout: timeoutRequisicao},
 	}
 }
 
@@ -225,8 +235,13 @@ func (c *Cliente) Status(ctx context.Context) (*provedor.StatusInstancia, error)
 // Fila lista as mensagens acumuladas na fila propria da z-api (secao 4.7).
 // Devolve o JSON bruto -- o formato exato dos itens nao importa pro
 // gateway, so o supervisor via CRM precisa enxergar o que esta parado la.
+// O metodo e GET. Era POST, e a z-api responde 415 (Unsupported Media Type)
+// -- entao a tela de Supervisao sempre mostrou "Gateway indisponivel" ao
+// pedir a fila, e o log do CRM acumulava `HTTP 502 para /api/zapi/fila`.
+// Confirmado chamando a z-api em 2026-08-13: GET devolve 200 com a lista
+// (vazia: `[]`), POST devolve 415, DELETE 204.
 func (c *Cliente) Fila(ctx context.Context) ([]byte, error) {
-	req, err := c.novaRequisicao(ctx, http.MethodPost, "queue", nil)
+	req, err := c.novaRequisicao(ctx, http.MethodGet, "queue", nil)
 	if err != nil {
 		return nil, fmt.Errorf("consultar fila: %w", err)
 	}
@@ -254,30 +269,102 @@ func (c *Cliente) LimparItemFila(ctx context.Context, id string) error {
 	return err
 }
 
-// QRCodeImagem devolve a imagem do qr code para reconectar a instancia
-// (tela do supervisor, secao 4.9) junto do content-type devolvido pela
-// z-api, pra repassar sem reinterpretar o formato.
-func (c *Cliente) QRCodeImagem(ctx context.Context) (imagem []byte, contentType string, err error) {
-	req, err := c.novaRequisicao(ctx, http.MethodGet, "qr-code-image", nil)
+// ResultadoQRCode e o qr code de reconexao ja interpretado.
+//
+// Conectada=true significa que NAO ha qr code para mostrar, e isso e um
+// estado normal, nao erro: a instancia so gera qr quando esta desconectada.
+type ResultadoQRCode struct {
+	Conectada   bool
+	ImagemPNG   []byte
+	ContentType string
+}
+
+// respostaQRCode cobre as formas que a z-api devolve em /qr-code/image.
+// O nome do campo do base64 nao esta fixado na doc, entao aceitamos os
+// candidatos conhecidos em vez de apostar num -- errar o nome devolveria
+// "sem qr" para sempre, sem erro nenhum.
+type respostaQRCode struct {
+	Connected bool   `json:"connected"`
+	Value     string `json:"value"`
+	QRCode    string `json:"qrcode"`
+	Image     string `json:"image"`
+	Base64    string `json:"base64"`
+	Error     string `json:"error"`
+}
+
+func (r respostaQRCode) base64Encontrado() string {
+	for _, v := range []string{r.Value, r.QRCode, r.Image, r.Base64} {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// QRCodeImagem devolve o qr code de reconexao (tela do supervisor, secao
+// 4.9), decodificado em PNG.
+//
+// P1-06, confirmado em 2026-08-13 chamando a z-api de verdade -- eram DOIS
+// bugs, e o efeito combinado era o recurso nunca ter funcionado:
+//
+//  1. O path era "qr-code-image", que a z-api responde com
+//     {"error":"NOT_FOUND"}. O correto e "qr-code/image".
+//  2. A resposta e application/json, nao imagem binaria. O codigo antigo
+//     repassava o corpo cru com o Content-Type da z-api, entao o <img> do
+//     CRM recebia JSON marcado como JSON, mostrava imagem quebrada, e o
+//     onerror da tela escondia o elemento -- falha silenciosa completa.
+func (c *Cliente) QRCodeImagem(ctx context.Context) (*ResultadoQRCode, error) {
+	req, err := c.novaRequisicao(ctx, http.MethodGet, "qr-code/image", nil)
 	if err != nil {
-		return nil, "", fmt.Errorf("obter qr code: %w", err)
+		return nil, fmt.Errorf("obter qr code: %w", err)
 	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, "", fmt.Errorf("obter qr code: %w", err)
+		return nil, fmt.Errorf("obter qr code: %w", err)
 	}
 	defer resp.Body.Close()
 
 	corpo, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, "", fmt.Errorf("obter qr code: ler resposta: %w", err)
+		return nil, fmt.Errorf("obter qr code: ler resposta: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("obter qr code: status %d da z-api: %s", resp.StatusCode, corpo)
+		return nil, fmt.Errorf("obter qr code: status %d da z-api: %s", resp.StatusCode, corpo)
 	}
 
-	return corpo, resp.Header.Get("Content-Type"), nil
+	// se um dia a z-api voltar a mandar imagem binaria, repassa direto.
+	if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(ct, "image/") {
+		return &ResultadoQRCode{ImagemPNG: corpo, ContentType: ct}, nil
+	}
+
+	var r respostaQRCode
+	if err := json.Unmarshal(corpo, &r); err != nil {
+		return nil, fmt.Errorf("obter qr code: resposta nao reconhecida (%s): %s", resp.Header.Get("Content-Type"), corpo)
+	}
+	if r.Error != "" {
+		return nil, fmt.Errorf("obter qr code: z-api respondeu erro: %s", r.Error)
+	}
+	if r.Connected {
+		return &ResultadoQRCode{Conectada: true}, nil
+	}
+
+	bruto := r.base64Encontrado()
+	if bruto == "" {
+		return nil, fmt.Errorf("obter qr code: resposta sem imagem e sem connected: %s", corpo)
+	}
+
+	// a z-api pode mandar o base64 puro ou ja como data URI.
+	if i := strings.Index(bruto, ","); strings.HasPrefix(bruto, "data:") && i > 0 {
+		bruto = bruto[i+1:]
+	}
+
+	imagem, err := base64.StdEncoding.DecodeString(bruto)
+	if err != nil {
+		return nil, fmt.Errorf("obter qr code: decodificar base64: %w", err)
+	}
+
+	return &ResultadoQRCode{ImagemPNG: imagem, ContentType: "image/png"}, nil
 }
 
 // corpoOuErro roda uma requisicao ja montada e devolve o corpo quando o

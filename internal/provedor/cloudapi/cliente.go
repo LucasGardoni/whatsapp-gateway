@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 const baseURLPadrao = "https://graph.facebook.com/v21.0"
@@ -30,7 +31,9 @@ func novoClienteComBase(baseURL, phoneNumberID, accessToken string) *Cliente {
 		baseURL:       baseURL,
 		phoneNumberID: phoneNumberID,
 		accessToken:   accessToken,
-		http:          http.DefaultClient,
+		// http.DefaultClient nao tem timeout -- ver o mesmo cuidado no
+		// cliente da z-api.
+		http: &http.Client{Timeout: 60 * time.Second},
 	}
 }
 

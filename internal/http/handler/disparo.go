@@ -61,7 +61,18 @@ func (h *Disparo) Criar(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	queries := store.New(h.pool)
+
+	// criar o disparo e avancar o estado do lead confirmam juntos ou nao
+	// confirmam (fase 4) -- ver criarParaLead.
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		slog.Error("disparo: iniciar transacao", "lead_id", req.LeadID, "erro", err)
+		http.Error(w, "erro interno", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	queries := store.New(tx)
 
 	disparo, err := h.criarParaLead(ctx, queries, req.LeadID, req.Telefone, req.Template, req.NomeEmpreendimento)
 	if err != nil {
@@ -78,11 +89,33 @@ func (h *Disparo) Criar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := tx.Commit(ctx); err != nil {
+		slog.Error("disparo: commit", "lead_id", req.LeadID, "erro", err)
+		http.Error(w, "erro interno", http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(criarDisparoResponse{
 		Token: disparo.Token,
 		Link:  h.baseURLPagina + "/c/" + disparo.Token,
 	})
+}
+
+// reenviarUmLead envolve um unico candidato do job de reenvio na sua
+// propria transacao -- ver o comentario no laco de Reenviar.
+func (h *Disparo) reenviarUmLead(ctx context.Context, leadID int64, telefone, template, nomeEmpreendimento string) error {
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("iniciar transacao: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := h.criarParaLead(ctx, store.New(tx), leadID, telefone, template, nomeEmpreendimento); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
 }
 
 // erroDisparoHTTP carrega o status HTTP certo pra criarParaLead poder ser
@@ -104,11 +137,21 @@ func (h *Disparo) criarParaLead(ctx context.Context, queries *store.Queries, lea
 		return store.Disparo{}, &erroDisparoHTTP{status: http.StatusBadRequest, mensagem: fmt.Sprintf("telefone invalido: %v", err)}
 	}
 
+	// resolver o @lid e OTIMIZACAO, nao pre-requisito (secao 4.3): ele deixa
+	// o matcher casar o lead pela regra 1 quando a z-api ocultar o telefone
+	// depois. Sem ele, sobram as regras de telefone e de token no texto.
+	//
+	// Por isso falha aqui NAO aborta o disparo. Antes abortava, e o efeito
+	// era grave: um telefone que a z-api nao resolvesse (ela responde `null`
+	// com status 200) devolvia 502 e o lead nunca era contatado -- perder o
+	// lead inteiro para nao perder um campo auxiliar.
 	resultadoLid, err := h.identidade.ResolverLid(ctx, strings.TrimPrefix(telefoneNormalizado, "+"))
-	if err != nil {
-		return store.Disparo{}, fmt.Errorf("resolver lid do lead %d: %w", leadID, &erroDisparoHTTP{status: http.StatusBadGateway, mensagem: "erro ao resolver identidade do telefone"})
-	}
-	if resultadoLid.Existe && resultadoLid.Lid != "" {
+	switch {
+	case err != nil:
+		slog.Warn("disparo: falha ao resolver lid, seguindo sem chat_lid", "lead_id", leadID, "erro", err)
+	case !resultadoLid.Resolvido:
+		slog.Warn("disparo: z-api nao resolveu o telefone, seguindo sem chat_lid", "lead_id", leadID)
+	case resultadoLid.Existe && resultadoLid.Lid != "":
 		if err := queries.AtualizarChatLidDoLead(ctx, store.AtualizarChatLidDoLeadParams{
 			ID:      leadID,
 			ChatLid: naoVazio(resultadoLid.Lid),
@@ -131,6 +174,20 @@ func (h *Disparo) criarParaLead(ctx context.Context, queries *store.Queries, lea
 	if err != nil {
 		return store.Disparo{}, fmt.Errorf("criar disparo para lead %d: %w", leadID, err)
 	}
+
+	// ciclo de vida (fase 4): o lead passa a 'disparado'. Vai na MESMA
+	// transacao que o CriarDisparo -- um crash entre os dois deixaria um
+	// disparo registrado com o lead ainda 'novo', e o job de reenvio
+	// (que filtra por estado) nunca mais olharia para esse lead.
+	// AvancarEstadoDoLead so avanca, entao reenvio para quem ja engajou
+	// nao rebaixa o estado.
+	if err := queries.AvancarEstadoDoLead(ctx, store.AvancarEstadoDoLeadParams{
+		ID:     leadID,
+		Estado: "disparado",
+	}); err != nil {
+		return store.Disparo{}, fmt.Errorf("avancar estado do lead %d para disparado: %w", leadID, err)
+	}
+
 	return disparo, nil
 }
 
@@ -208,7 +265,11 @@ func (h *Disparo) Reenviar(w http.ResponseWriter, r *http.Request) {
 			nomeEmpreendimento = *c.NomeEmpreendimento
 		}
 
-		if _, err := h.criarParaLead(ctx, queries, c.LeadID, *c.TelefoneE164, template, nomeEmpreendimento); err != nil {
+		// uma transacao POR LEAD, nao uma para o lote: o disparo e a
+		// transicao de estado de um lead tem de ser atomicos entre si, mas
+		// o lead 7 falhar nao pode desfazer os seis que ja deram certo --
+		// o job existe justamente para seguir apesar de falhas pontuais.
+		if err := h.reenviarUmLead(ctx, c.LeadID, *c.TelefoneE164, template, nomeEmpreendimento); err != nil {
 			slog.Error("disparo: reenvio: falha em um lead, seguindo pros demais", "lead_id", c.LeadID, "erro", err)
 			resp.Falhas = append(resp.Falhas, fmt.Sprintf("lead %d: %v", c.LeadID, err))
 			continue

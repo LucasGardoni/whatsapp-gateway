@@ -9,6 +9,30 @@ SELECT * FROM disparo WHERE token = $1;
 -- name: AtualizarChatLidDoLead :exec
 UPDATE lead SET chat_lid = $2 WHERE id = $1;
 
+-- name: AvancarEstadoDoLead :exec
+-- Ciclo de vida do lead (fase 4). Antes NENHUMA query escrevia lead.estado:
+-- o lead nascia 'novo' e morria 'novo', e 'disparado'/'clicou'/'engajado'
+-- nunca aconteciam -- por isso a fila de reenvio ficava sempre vazia e a
+-- tela nao distinguia quem ja tinha sido abordado.
+--
+-- So AVANCA na progressao, pelo mesmo motivo do P2-15: um disparo novo
+-- para quem ja respondeu nao pode rebaixar 'engajado' de volta para
+-- 'disparado'. E, como array_position devolve NULL para estado fora da
+-- lista e NULL > x nao e verdadeiro, isto tambem respeita a fronteira de
+-- dono da decisao D-4 de graca: 'em_atendimento', 'ganho' e 'perdido' sao
+-- do CRM, e o gateway nunca os sobrescreve.
+UPDATE lead
+SET estado = sqlc.arg(estado)
+WHERE id = sqlc.arg(id)
+  AND array_position(ARRAY['novo', 'disparado', 'clicou', 'engajado'], sqlc.arg(estado))
+    > array_position(ARRAY['novo', 'disparado', 'clicou', 'engajado'], estado);
+
+-- name: MarcarDisparoClicado :exec
+-- status do disparo acompanha o clique. Guarda de idempotencia: o cliente
+-- pode abrir o link varias vezes (WhatsApp faz preview, ele volta e clica
+-- de novo) e so a primeira vez conta como transicao.
+UPDATE disparo SET status = 'clicou' WHERE token = sqlc.arg(token) AND status <> 'clicou';
+
 -- name: RegistrarClique :exec
 INSERT INTO clique (token, lead_id, ip, user_agent)
 VALUES ($1, $2, $3, $4);

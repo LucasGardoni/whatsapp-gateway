@@ -52,15 +52,11 @@ func (h *Transbordo) RedirecionarClique(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// registra o clique antes de montar a pagina (secao 9 -- "registro do
-	// clique antes do redirect"). Falha aqui nao impede a pagina de abrir.
-	if err := queries.RegistrarClique(ctx, store.RegistrarCliqueParams{
-		Token:     token,
-		LeadID:    &disparo.LeadID,
-		Ip:        naoVazio(r.RemoteAddr),
-		UserAgent: naoVazio(r.UserAgent()),
-	}); err != nil {
-		slog.Error("transbordo: registrar clique", "token", token, "erro", err)
-	}
+	// clique antes do redirect"). Falha aqui nao impede a pagina de abrir:
+	// o cliente ja clicou, e negar a ele o caminho pro WhatsApp por causa
+	// de um problema nosso de gravacao seria perder o lead de vez. Por isso
+	// tudo aqui e best-effort e so loga.
+	h.registrarClique(r, token, disparo.LeadID)
 
 	parametroNumeroB, err := queries.BuscarParametro(ctx, chaveParametroNumeroB)
 	if err != nil || parametroNumeroB.Valor == nil || *parametroNumeroB.Valor == "" {
@@ -83,6 +79,59 @@ func (h *Transbordo) RedirecionarClique(w http.ResponseWriter, r *http.Request) 
 		LinkWhatsapp:       linkWhatsapp,
 	}); err != nil {
 		slog.Error("transbordo: renderizar pagina", "erro", err)
+	}
+}
+
+// registrarClique grava as tres consequencias de um clique -- o registro
+// em `clique`, o `disparo.status` e o avanco do lead para 'clicou' (fase
+// 4) -- numa transacao so, para nao existir estado meio-gravado: lead
+// 'clicou' sem linha em `clique` faria a metrica de conversao do disparo
+// mentir para a diretoria comercial.
+//
+// Best-effort de proposito: se falhar, a pagina abre do mesmo jeito. O
+// cliente ja demonstrou interesse; travar o caminho dele ate o WhatsApp
+// por causa de uma falha nossa de gravacao custa o lead inteiro, enquanto
+// perder o registro custa uma linha de metrica.
+func (h *Transbordo) registrarClique(r *http.Request, token string, leadID int64) {
+	ctx := r.Context()
+
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		slog.Error("transbordo: iniciar transacao do clique", "token", token, "erro", err)
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	queries := store.New(tx)
+
+	if err := queries.RegistrarClique(ctx, store.RegistrarCliqueParams{
+		Token:  token,
+		LeadID: &leadID,
+		// IP e user agent entram como evidencia do clique. RemoteAddr vem
+		// com porta e, atras do proxy reverso, e o IP do proxy -- serve
+		// para auditoria, nao para geolocalizar.
+		Ip:        naoVazio(r.RemoteAddr),
+		UserAgent: naoVazio(r.UserAgent()),
+	}); err != nil {
+		slog.Error("transbordo: registrar clique", "token", token, "erro", err)
+		return
+	}
+
+	if err := queries.MarcarDisparoClicado(ctx, token); err != nil {
+		slog.Error("transbordo: marcar disparo como clicado", "token", token, "erro", err)
+		return
+	}
+
+	if err := queries.AvancarEstadoDoLead(ctx, store.AvancarEstadoDoLeadParams{
+		ID:     leadID,
+		Estado: "clicou",
+	}); err != nil {
+		slog.Error("transbordo: avancar estado do lead para clicou", "lead_id", leadID, "erro", err)
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		slog.Error("transbordo: commit do clique", "token", token, "erro", err)
 	}
 }
 

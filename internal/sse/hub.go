@@ -29,6 +29,11 @@ const (
 	EventoMensagemNova        = "mensagem_nova"
 	EventoMensagemStatus      = "mensagem_status"
 	EventoMensagemInternaNova = "mensagem_interna_nova"
+	// EventoFilaAtualizada avisa que algo mudou numa conversa SEM corretor
+	// atribuido, ou seja, na fila de espera (fase 5). Tipo proprio, e nao
+	// mensagem_nova para todos, porque senao a tela de conversa de cada
+	// corretor reagiria a mensagem de um lead que nao e dele.
+	EventoFilaAtualizada = "fila_atualizada"
 )
 
 // tamanhoBufferAssinante evita que o publicador bloqueie por causa de um
@@ -73,10 +78,20 @@ func (h *Hub) Assinar(corretorID int64) (ch <-chan Evento, cancelar func()) {
 }
 
 // Publicar entrega o evento a quem estiver assinando este corretor.
-// corretorID nulo (conversa ainda na fila de espera, sem corretor
-// atribuido) nao publica nada -- ninguem assina uma conversa sem dono.
+//
+// corretorID nulo significa conversa ainda na fila de espera, sem dono.
+// Antes isso nao publicava nada e o evento era simplesmente perdido: um
+// lead novo chegava e a tela de Fila so mostrava depois que o corretor
+// desse F5 -- justamente a tela onde a demora custa atendimento.
+//
+// Agora vira um EventoFilaAtualizada para todo mundo conectado. O tipo e
+// outro de proposito: retransmitir mensagem_nova para todos faria a tela
+// de conversa de cada corretor reagir a uma mensagem que nao e dele. Os
+// campos originais sao descartados junto -- quem esta na Fila so precisa
+// saber que a lista mudou, e a lista ja e filtrada por permissao no CRM.
 func (h *Hub) Publicar(corretorID *int64, evento Evento) {
 	if corretorID == nil {
+		h.PublicarTodos(Evento{Tipo: EventoFilaAtualizada})
 		return
 	}
 

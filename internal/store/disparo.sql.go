@@ -25,6 +25,35 @@ func (q *Queries) AtualizarChatLidDoLead(ctx context.Context, arg AtualizarChatL
 	return err
 }
 
+const avancarEstadoDoLead = `-- name: AvancarEstadoDoLead :exec
+UPDATE lead
+SET estado = $1
+WHERE id = $2
+  AND array_position(ARRAY['novo', 'disparado', 'clicou', 'engajado'], $1)
+    > array_position(ARRAY['novo', 'disparado', 'clicou', 'engajado'], estado)
+`
+
+type AvancarEstadoDoLeadParams struct {
+	Estado string `json:"estado"`
+	ID     int64  `json:"id"`
+}
+
+// Ciclo de vida do lead (fase 4). Antes NENHUMA query escrevia lead.estado:
+// o lead nascia 'novo' e morria 'novo', e 'disparado'/'clicou'/'engajado'
+// nunca aconteciam -- por isso a fila de reenvio ficava sempre vazia e a
+// tela nao distinguia quem ja tinha sido abordado.
+//
+// So AVANCA na progressao, pelo mesmo motivo do P2-15: um disparo novo
+// para quem ja respondeu nao pode rebaixar 'engajado' de volta para
+// 'disparado'. E, como array_position devolve NULL para estado fora da
+// lista e NULL > x nao e verdadeiro, isto tambem respeita a fronteira de
+// dono da decisao D-4 de graca: 'em_atendimento', 'ganho' e 'perdido' sao
+// do CRM, e o gateway nunca os sobrescreve.
+func (q *Queries) AvancarEstadoDoLead(ctx context.Context, arg AvancarEstadoDoLeadParams) error {
+	_, err := q.db.Exec(ctx, avancarEstadoDoLead, arg.Estado, arg.ID)
+	return err
+}
+
 const buscarDisparoPorToken = `-- name: BuscarDisparoPorToken :one
 SELECT id, lead_id, template, token, enviado_em, status, nome_empreendimento FROM disparo WHERE token = $1
 `
@@ -143,6 +172,18 @@ func (q *Queries) CriarDisparo(ctx context.Context, arg CriarDisparoParams) (Dis
 		&i.NomeEmpreendimento,
 	)
 	return i, err
+}
+
+const marcarDisparoClicado = `-- name: MarcarDisparoClicado :exec
+UPDATE disparo SET status = 'clicou' WHERE token = $1 AND status <> 'clicou'
+`
+
+// status do disparo acompanha o clique. Guarda de idempotencia: o cliente
+// pode abrir o link varias vezes (WhatsApp faz preview, ele volta e clica
+// de novo) e so a primeira vez conta como transicao.
+func (q *Queries) MarcarDisparoClicado(ctx context.Context, token string) error {
+	_, err := q.db.Exec(ctx, marcarDisparoClicado, token)
+	return err
 }
 
 const registrarClique = `-- name: RegistrarClique :exec

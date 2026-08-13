@@ -24,6 +24,7 @@ import (
 	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/outbox"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor/zapi"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/retencao"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/saude"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/sse"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
@@ -66,7 +67,7 @@ func run() error {
 	hub := sse.NovoHub()
 	tokenStore := sse.NovoTokenStore()
 
-	worker := outbox.NovoWorker(queries, zapiCliente, motorDLP, outbox.Config{})
+	worker := outbox.NovoWorker(queries, zapiCliente, motorDLP, outbox.Config{MidiaDir: cfg.MidiaDir})
 	worker.Hub = hub
 
 	monitorSaude := saude.NovoMonitor(zapiCliente, queries, saude.Config{NomeProvedor: "zapi"})
@@ -75,6 +76,8 @@ func run() error {
 
 	monitorAlerta := alerta.NovoMonitor(queries, alerta.Config{})
 
+	monitorRetencao := retencao.NovoMonitor(queries, retencao.Config{})
+
 	baixador := midia.NovoBaixador(cfg.MidiaDir)
 	webhookZAPI := handler.NovoWebhookZAPI(pool, baixador)
 	webhookZAPI.Hub = hub
@@ -82,10 +85,10 @@ func run() error {
 	identidadeCliente := identidade.NovoCliente(cfg.ZAPIInstanceID, cfg.ZAPIInstanceToken, cfg.ZAPIClientToken)
 	disparo := handler.NovoDisparo(pool, identidadeCliente, cfg.PublicBaseURL)
 	transbordo := handler.NovoTransbordo(pool)
-	mensagens := handler.NovoMensagens(pool)
+	mensagens := handler.NovoMensagens(pool, cfg.MidiaDir)
 	mensagens.Hub = hub
 	sessoesSSE := handler.NovoSessoesSSE(tokenStore)
-	eventos := handler.NovoEventos(hub, tokenStore)
+	eventos := handler.NovoEventos(hub, tokenStore, cfg.CORSOrigemCRM)
 	zapiAdmin := handler.NovoZAPIAdmin(zapiCliente)
 	leads := handler.NovoLeads(pool, ingestao.RegistroPadrao())
 	leads.VerifyToken = cfg.MetaWebhookVerifyToken
@@ -96,9 +99,21 @@ func run() error {
 
 	router := httpserver.NovoRouter(webhookZAPI, disparo, transbordo, mensagens, sessoesSSE, eventos, zapiAdmin, leads, cfg.GatewayServiceToken, cfg.WebhookPathSecret, cfg.RateLimitPorMinuto)
 
+	// Sem timeout nenhum, uma conexao aberta e ociosa segura um goroutine e
+	// um descritor para sempre -- e o gateway fica exposto na internet
+	// (webhooks), onde isso e trivial de provocar.
+	//
+	// WriteTimeout fica ZERADO de proposito: ele vale para a resposta
+	// inteira, e /eventos e um stream que dura horas. Qualquer valor aqui
+	// derrubaria o SSE do corretor no meio do expediente. Quem cobre o
+	// caso patologico e o IdleTimeout (conexao sem requisicao) somado ao
+	// ReadHeaderTimeout (cliente que abre e nao fala).
 	server := &http.Server{
-		Addr:    ":" + cfg.Port,
-		Handler: router,
+		Addr:              ":" + cfg.Port,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
 	}
 
 	serverErr := make(chan error, 1)
@@ -135,6 +150,12 @@ func run() error {
 		alertaErr <- monitorAlerta.Executar(ctx)
 	}()
 
+	retencaoErr := make(chan error, 1)
+	go func() {
+		slog.Info("monitor de retencao iniciado")
+		retencaoErr <- monitorRetencao.Executar(ctx)
+	}()
+
 	select {
 	case <-ctx.Done():
 		slog.Info("sinal de encerramento recebido, iniciando shutdown")
@@ -161,6 +182,11 @@ func run() error {
 	case err := <-alertaErr:
 		if err != nil {
 			return fmt.Errorf("monitor de alerta de volume: %w", err)
+		}
+		return nil
+	case err := <-retencaoErr:
+		if err != nil {
+			return fmt.Errorf("monitor de retencao: %w", err)
 		}
 		return nil
 	}
@@ -192,6 +218,10 @@ func run() error {
 
 	if err := <-alertaErr; err != nil {
 		return fmt.Errorf("monitor de alerta de volume: %w", err)
+	}
+
+	if err := <-retencaoErr; err != nil {
+		return fmt.Errorf("monitor de retencao: %w", err)
 	}
 
 	slog.Info("gateway encerrado com sucesso")

@@ -42,6 +42,10 @@ func NovoRouter(
 ) chi.Router {
 	r := chi.NewRouter()
 
+	// correlacao antes de tudo: vale para toda rota, inclusive as que
+	// respondem erro, que sao justamente as que se quer investigar depois.
+	r.Use(middleware.RequestID)
+
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -61,6 +65,11 @@ func NovoRouter(
 		r.Post("/webhooks/zapi"+segredo+"/mensagens", webhookZAPI.OnMessageReceived)
 		r.Post("/webhooks/zapi"+segredo+"/status-mensagem", webhookZAPI.OnMessageStatus)
 		r.Post("/webhooks/zapi"+segredo+"/desconexao", webhookZAPI.OnWhatsappDisconnected)
+
+		// resultado assincrono do envio (P1-09). Configurar no campo
+		// "Ao enviar" do painel Z-API -- ate a fase 6 essa rota nao
+		// existia e o campo tinha de ficar vazio.
+		r.Post("/webhooks/zapi"+segredo+"/envio", webhookZAPI.OnMessageSend)
 
 		// webhook generico de ingestao de leads (fase 11) -- GET e o
 		// handshake de verificacao que a Meta exige antes de aceitar

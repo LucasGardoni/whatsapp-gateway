@@ -59,14 +59,27 @@ func (h *ZAPIAdmin) LimparItemFila(w http.ResponseWriter, r *http.Request) {
 // QRCode repassa a imagem do qr code de reconexao pro CRM exibir na tela
 // do supervisor (secao 4.9).
 func (h *ZAPIAdmin) QRCode(w http.ResponseWriter, r *http.Request) {
-	imagem, contentType, err := h.cliente.QRCodeImagem(r.Context())
+	resultado, err := h.cliente.QRCodeImagem(r.Context())
 	if err != nil {
 		slog.Error("zapi admin: obter qr code", "erro", err)
 		http.Error(w, "erro ao obter qr code", http.StatusBadGateway)
 		return
 	}
-	if contentType != "" {
-		w.Header().Set("Content-Type", contentType)
+
+	// instancia conectada nao tem qr code, e isso nao e erro -- e a
+	// situacao normal. 409 distingue do 502 de falha real, para a tela
+	// poder dizer "conectada, nao precisa de qr" em vez de esconder o
+	// elemento e deixar o supervisor sem saber o que aconteceu (P1-06).
+	if resultado.Conectada {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"conectada":true,"detalhe":"instancia ja conectada, qr code nao se aplica"}`))
+		return
 	}
-	_, _ = w.Write(imagem)
+
+	w.Header().Set("Content-Type", resultado.ContentType)
+	// o qr do WhatsApp expira em segundos -- cache aqui serviria imagem
+	// morta e o supervisor tentaria escanear um codigo invalido.
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(resultado.ImagemPNG)
 }
