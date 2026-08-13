@@ -323,6 +323,30 @@ func (q *Queries) InserirMensagemEntrada(ctx context.Context, arg InserirMensage
 	return id, err
 }
 
+const preencherChatLidSeVazio = `-- name: PreencherChatLidSeVazio :exec
+UPDATE lead
+SET chat_lid = $1
+WHERE lead.id = $2
+  AND lead.chat_lid IS NULL
+  AND NOT EXISTS (SELECT 1 FROM lead outro WHERE outro.chat_lid = $1)
+`
+
+type PreencherChatLidSeVazioParams struct {
+	ChatLid *string `json:"chat_lid"`
+	ID      int64   `json:"id"`
+}
+
+// backfill do @lid quando o lead foi casado por telefone ou token: o chatLid
+// vem no payload da mensagem e e a identidade primaria do contato (secao 4.3).
+// Sem isso o mesmo contato entra como lead novo na primeira vez que a z-api
+// ocultar o phone, partindo o historico em dois.
+// NOT EXISTS evita violar lead_chat_lid_idx quando outro lead ja tem esse lid
+// (a regra 1 teria casado antes; sobra o caso de corrida ou duplicata legada).
+func (q *Queries) PreencherChatLidSeVazio(ctx context.Context, arg PreencherChatLidSeVazioParams) error {
+	_, err := q.db.Exec(ctx, preencherChatLidSeVazio, arg.ChatLid, arg.ID)
+	return err
+}
+
 const registrarSaudeProvedor = `-- name: RegistrarSaudeProvedor :exec
 INSERT INTO provedor_saude (provedor, conectado, latencia_ms, ultimo_erro)
 VALUES ($1, $2, $3, $4)

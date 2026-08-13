@@ -39,6 +39,7 @@ type Repositorio interface {
 	BuscarCliqueRecentePorLead(ctx context.Context, arg store.BuscarCliqueRecentePorLeadParams) (store.Clique, error)
 	BuscarLeadPorTokenNoTexto(ctx context.Context, texto string) (store.Lead, error)
 	CriarLead(ctx context.Context, arg store.CriarLeadParams) (store.Lead, error)
+	PreencherChatLidSeVazio(ctx context.Context, arg store.PreencherChatLidSeVazioParams) error
 }
 
 // Entrada e o que o webhook consegue extrair do payload antes de saber o
@@ -80,6 +81,9 @@ func Resolver(ctx context.Context, repo Repositorio, e Entrada) (Resultado, erro
 			lead, err := repo.BuscarLeadPorTelefone(ctx, &telefoneNormalizado)
 			switch {
 			case err == nil:
+				if err := adotarChatLid(ctx, repo, lead, chatLidCandidato); err != nil {
+					return Resultado{}, err
+				}
 				return resultadoPorTelefone(ctx, repo, lead)
 			case !errors.Is(err, pgx.ErrNoRows):
 				return Resultado{}, fmt.Errorf("matcher: buscar lead por telefone: %w", err)
@@ -91,6 +95,9 @@ func Resolver(ctx context.Context, repo Repositorio, e Entrada) (Resultado, erro
 		lead, err := repo.BuscarLeadPorTokenNoTexto(ctx, e.Texto)
 		switch {
 		case err == nil:
+			if err := adotarChatLid(ctx, repo, lead, chatLidCandidato); err != nil {
+				return Resultado{}, err
+			}
 			return Resultado{LeadID: lead.ID, Regra: RegraToken}, nil
 		case !errors.Is(err, pgx.ErrNoRows):
 			return Resultado{}, fmt.Errorf("matcher: buscar lead por token no texto: %w", err)
@@ -107,6 +114,24 @@ func Resolver(ctx context.Context, repo Repositorio, e Entrada) (Resultado, erro
 		return Resultado{}, fmt.Errorf("matcher: criar lead novo: %w", err)
 	}
 	return Resultado{LeadID: lead.ID, Novo: true, Regra: RegraLeadNovo}, nil
+}
+
+// adotarChatLid grava no lead o @lid que veio no payload quando ele foi casado
+// por telefone ou token e ainda nao tinha um. chat_lid e a identidade primaria
+// (secao 4.3) e o telefone e o que a z-api pode parar de mandar a qualquer
+// momento -- sem esse backfill, a proxima mensagem com phone ocultado nao casa
+// pela regra 1 e o contato vira um lead novo, partindo o historico.
+func adotarChatLid(ctx context.Context, repo Repositorio, lead store.Lead, chatLid string) error {
+	if chatLid == "" || lead.ChatLid != nil {
+		return nil
+	}
+	if err := repo.PreencherChatLidSeVazio(ctx, store.PreencherChatLidSeVazioParams{
+		ID:      lead.ID,
+		ChatLid: &chatLid,
+	}); err != nil {
+		return fmt.Errorf("matcher: preencher chat_lid do lead %d: %w", lead.ID, err)
+	}
+	return nil
 }
 
 // resultadoPorTelefone distingue a regra 2 da regra 3 -- a diferenca e so a

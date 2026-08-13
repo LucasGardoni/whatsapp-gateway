@@ -35,6 +35,19 @@ INSERT INTO lead (nome, telefone_e164, chat_lid, origem, estado)
 VALUES ($1, $2, $3, $4, 'novo')
 RETURNING *;
 
+-- name: PreencherChatLidSeVazio :exec
+-- backfill do @lid quando o lead foi casado por telefone ou token: o chatLid
+-- vem no payload da mensagem e e a identidade primaria do contato (secao 4.3).
+-- Sem isso o mesmo contato entra como lead novo na primeira vez que a z-api
+-- ocultar o phone, partindo o historico em dois.
+-- NOT EXISTS evita violar lead_chat_lid_idx quando outro lead ja tem esse lid
+-- (a regra 1 teria casado antes; sobra o caso de corrida ou duplicata legada).
+UPDATE lead
+SET chat_lid = sqlc.arg(chat_lid)
+WHERE lead.id = sqlc.arg(id)
+  AND lead.chat_lid IS NULL
+  AND NOT EXISTS (SELECT 1 FROM lead outro WHERE outro.chat_lid = sqlc.arg(chat_lid));
+
 -- name: BuscarConversaAbertaPorLead :one
 SELECT * FROM conversa WHERE lead_id = $1 AND fechada_em IS NULL ORDER BY aberta_em DESC LIMIT 1;
 
