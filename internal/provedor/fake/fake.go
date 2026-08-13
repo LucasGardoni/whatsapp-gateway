@@ -13,11 +13,12 @@ import (
 type Provedor struct {
 	mu sync.Mutex
 
-	Enviados    []provedor.MensagemTexto
-	StatusAtual provedor.StatusInstancia
+	Enviados      []provedor.MensagemTexto
+	EnviadosMidia []provedor.MensagemMidia
+	StatusAtual   provedor.StatusInstancia
 
 	// ProximoErro, se definido, e devolvido pela proxima chamada a Enviar
-	// e depois limpo -- simula uma falha pontual (ex.: shadowban).
+	// ou EnviarMidia e depois limpo -- simula uma falha pontual (ex.: shadowban).
 	ProximoErro error
 }
 
@@ -42,6 +43,21 @@ func (p *Provedor) Enviar(ctx context.Context, msg provedor.MensagemTexto) (*pro
 	}
 
 	return &provedor.ResultadoEnvio{MessageID: fmt.Sprintf("fake-%d", len(p.Enviados))}, nil
+}
+
+func (p *Provedor) EnviarMidia(ctx context.Context, msg provedor.MensagemMidia) (*provedor.ResultadoEnvio, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.EnviadosMidia = append(p.EnviadosMidia, msg)
+
+	if p.ProximoErro != nil {
+		erro := p.ProximoErro
+		p.ProximoErro = nil
+		return nil, erro
+	}
+
+	return &provedor.ResultadoEnvio{MessageID: fmt.Sprintf("fake-midia-%d", len(p.EnviadosMidia))}, nil
 }
 
 func (p *Provedor) Status(ctx context.Context) (*provedor.StatusInstancia, error) {

@@ -4,10 +4,11 @@ package provedor
 
 import "context"
 
-// Provedor e implementado por qualquer canal capaz de enviar texto ao
-// numero B e reportar se a instancia esta conectada.
+// Provedor e implementado por qualquer canal capaz de enviar texto ou
+// midia ao numero B e reportar se a instancia esta conectada.
 type Provedor interface {
 	Enviar(ctx context.Context, msg MensagemTexto) (*ResultadoEnvio, error)
+	EnviarMidia(ctx context.Context, msg MensagemMidia) (*ResultadoEnvio, error)
 	Status(ctx context.Context) (*StatusInstancia, error)
 }
 
@@ -16,6 +17,19 @@ type Provedor interface {
 type MensagemTexto struct {
 	Destinatario string
 	Texto        string
+}
+
+// MensagemMidia e o anexo a enviar (fase 9). Tipo segue o vocabulario de
+// mensagem.tipo (imagem | audio | video | documento) e decide qual
+// endpoint da z-api e chamado. ConteudoBase64 e o arquivo codificado como
+// data URI (ver internal/midia.CodificarBase64) -- o provedor nao baixa
+// nem le arquivo do disco, so fala HTTP.
+type MensagemMidia struct {
+	Destinatario   string
+	Tipo           string
+	ConteudoBase64 string
+	NomeArquivo    string
+	Legenda        string
 }
 
 // ResultadoEnvio traz os identificadores devolvidos pelo provedor.

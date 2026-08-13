@@ -29,7 +29,7 @@ func (q *Queries) BuscarConversaPorID(ctx context.Context, id int64) (Conversa, 
 const criarMensagemSaida = `-- name: CriarMensagemSaida :one
 INSERT INTO mensagem (conversa_id, direcao, tipo, texto, provedor)
 VALUES ($1, 'saida', 'texto', $2, 'zapi')
-RETURNING id, conversa_id, direcao, tipo, texto, midia_caminho, provedor, provedor_msg_id, zaap_id, status, tentativas, tentar_em, payload_bruto, criado_em, hash_anterior, hash
+RETURNING id, conversa_id, direcao, tipo, texto, midia_caminho, provedor, provedor_msg_id, zaap_id, status, tentativas, tentar_em, payload_bruto, criado_em, hash_anterior, hash, ultimo_erro
 `
 
 type CriarMensagemSaidaParams struct {
@@ -61,6 +61,7 @@ func (q *Queries) CriarMensagemSaida(ctx context.Context, arg CriarMensagemSaida
 		&i.CriadoEm,
 		&i.HashAnterior,
 		&i.Hash,
+		&i.UltimoErro,
 	)
 	return i, err
 }

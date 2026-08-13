@@ -21,6 +21,7 @@ import (
 	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/outbox"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor/zapi"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/saude"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/sse"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
 )
@@ -65,6 +66,8 @@ func run() error {
 	worker := outbox.NovoWorker(queries, zapiCliente, motorDLP, outbox.Config{})
 	worker.Hub = hub
 
+	monitorSaude := saude.NovoMonitor(zapiCliente, queries, saude.Config{NomeProvedor: "zapi"})
+
 	baixador := midia.NovoBaixador(cfg.MidiaDir)
 	webhookZAPI := handler.NovoWebhookZAPI(pool, baixador)
 	webhookZAPI.Hub = hub
@@ -76,8 +79,9 @@ func run() error {
 	mensagens.Hub = hub
 	sessoesSSE := handler.NovoSessoesSSE(tokenStore)
 	eventos := handler.NovoEventos(hub, tokenStore)
+	zapiAdmin := handler.NovoZAPIAdmin(zapiCliente)
 
-	router := httpserver.NovoRouter(webhookZAPI, disparo, transbordo, mensagens, sessoesSSE, eventos, cfg.GatewayServiceToken)
+	router := httpserver.NovoRouter(webhookZAPI, disparo, transbordo, mensagens, sessoesSSE, eventos, zapiAdmin, cfg.GatewayServiceToken)
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,
@@ -100,6 +104,12 @@ func run() error {
 		workerErr <- worker.Executar(ctx)
 	}()
 
+	saudeErr := make(chan error, 1)
+	go func() {
+		slog.Info("monitor de saude iniciado")
+		saudeErr <- monitorSaude.Executar(ctx)
+	}()
+
 	select {
 	case <-ctx.Done():
 		slog.Info("sinal de encerramento recebido, iniciando shutdown")
@@ -111,6 +121,11 @@ func run() error {
 	case err := <-workerErr:
 		if err != nil {
 			return fmt.Errorf("outbox worker: %w", err)
+		}
+		return nil
+	case err := <-saudeErr:
+		if err != nil {
+			return fmt.Errorf("monitor de saude: %w", err)
 		}
 		return nil
 	}
@@ -130,6 +145,10 @@ func run() error {
 	// nao precisa de outro timeout aqui (ver Config.TimeoutCiclo).
 	if err := <-workerErr; err != nil {
 		return fmt.Errorf("outbox worker: %w", err)
+	}
+
+	if err := <-saudeErr; err != nil {
+		return fmt.Errorf("monitor de saude: %w", err)
 	}
 
 	slog.Info("gateway encerrado com sucesso")

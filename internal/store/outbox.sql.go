@@ -30,28 +30,36 @@ func (q *Queries) MarcarMensagemEnviada(ctx context.Context, arg MarcarMensagemE
 
 const marcarMensagemFalhaDefinitiva = `-- name: MarcarMensagemFalhaDefinitiva :exec
 UPDATE mensagem
-SET status = 'falha', tentativas = tentativas + 1
+SET status = 'falha', tentativas = tentativas + 1, ultimo_erro = $2
 WHERE id = $1
 `
 
-func (q *Queries) MarcarMensagemFalhaDefinitiva(ctx context.Context, id int64) error {
-	_, err := q.db.Exec(ctx, marcarMensagemFalhaDefinitiva, id)
+type MarcarMensagemFalhaDefinitivaParams struct {
+	ID         int64   `json:"id"`
+	UltimoErro *string `json:"ultimo_erro"`
+}
+
+func (q *Queries) MarcarMensagemFalhaDefinitiva(ctx context.Context, arg MarcarMensagemFalhaDefinitivaParams) error {
+	_, err := q.db.Exec(ctx, marcarMensagemFalhaDefinitiva, arg.ID, arg.UltimoErro)
 	return err
 }
 
 const marcarMensagemParaRetentativa = `-- name: MarcarMensagemParaRetentativa :exec
 UPDATE mensagem
-SET status = 'pendente', tentativas = tentativas + 1, tentar_em = $2
+SET status = 'pendente', tentativas = tentativas + 1, tentar_em = $2, ultimo_erro = $3
 WHERE id = $1
 `
 
 type MarcarMensagemParaRetentativaParams struct {
-	ID       int64            `json:"id"`
-	TentarEm pgtype.Timestamp `json:"tentar_em"`
+	ID         int64            `json:"id"`
+	TentarEm   pgtype.Timestamp `json:"tentar_em"`
+	UltimoErro *string          `json:"ultimo_erro"`
 }
 
+// ultimo_erro fica visivel ao supervisor mesmo antes da falha definitiva
+// (fase 9 -- motivo de shadowban/falha consultavel).
 func (q *Queries) MarcarMensagemParaRetentativa(ctx context.Context, arg MarcarMensagemParaRetentativaParams) error {
-	_, err := q.db.Exec(ctx, marcarMensagemParaRetentativa, arg.ID, arg.TentarEm)
+	_, err := q.db.Exec(ctx, marcarMensagemParaRetentativa, arg.ID, arg.TentarEm, arg.UltimoErro)
 	return err
 }
 
@@ -80,9 +88,9 @@ WITH selecionadas AS (
     SET status = 'enviando'
     FROM selecionadas s
     WHERE m.id = s.id
-    RETURNING m.id, m.conversa_id, m.texto, m.tentativas
+    RETURNING m.id, m.conversa_id, m.tipo, m.texto, m.midia_caminho, m.tentativas
 )
-SELECT a.id, a.conversa_id, a.texto, a.tentativas, lead.chat_lid, lead.telefone_e164, c.corretor_id
+SELECT a.id, a.conversa_id, a.tipo, a.texto, a.midia_caminho, a.tentativas, lead.chat_lid, lead.telefone_e164, c.corretor_id
 FROM atualizadas a
 JOIN conversa c ON c.id = a.conversa_id
 JOIN lead ON lead.id = c.lead_id
@@ -91,7 +99,9 @@ JOIN lead ON lead.id = c.lead_id
 type SelecionarPendentesParaEnvioRow struct {
 	ID           int64   `json:"id"`
 	ConversaID   int64   `json:"conversa_id"`
+	Tipo         string  `json:"tipo"`
 	Texto        *string `json:"texto"`
+	MidiaCaminho *string `json:"midia_caminho"`
 	Tentativas   int32   `json:"tentativas"`
 	ChatLid      *string `json:"chat_lid"`
 	TelefoneE164 *string `json:"telefone_e164"`
@@ -102,6 +112,7 @@ type SelecionarPendentesParaEnvioRow struct {
 // FOR UPDATE SKIP LOCKED evita que dois workers peguem a mesma mensagem.
 // conversa_id e corretor_id alimentam a publicacao do evento sse apos o
 // envio (fase 7) -- sem eles o worker nao sabe pra qual corretor notificar.
+// tipo/midia_caminho alimentam o envio de midia (fase 9).
 func (q *Queries) SelecionarPendentesParaEnvio(ctx context.Context, limit int32) ([]SelecionarPendentesParaEnvioRow, error) {
 	rows, err := q.db.Query(ctx, selecionarPendentesParaEnvio, limit)
 	if err != nil {
@@ -114,7 +125,9 @@ func (q *Queries) SelecionarPendentesParaEnvio(ctx context.Context, limit int32)
 		if err := rows.Scan(
 			&i.ID,
 			&i.ConversaID,
+			&i.Tipo,
 			&i.Texto,
+			&i.MidiaCaminho,
 			&i.Tentativas,
 			&i.ChatLid,
 			&i.TelefoneE164,

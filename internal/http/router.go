@@ -28,6 +28,7 @@ func NovoRouter(
 	mensagens *handler.Mensagens,
 	sessoesSSE *handler.SessoesSSE,
 	eventos *handler.Eventos,
+	zapiAdmin *handler.ZAPIAdmin,
 	tokenServico string,
 ) chi.Router {
 	r := chi.NewRouter()
@@ -50,6 +51,13 @@ func NovoRouter(
 		r.Use(middleware.ExigirTokenServico(tokenServico))
 		r.Post("/api/mensagens", mensagens.Criar)
 		r.Post("/api/sessoes-sse", sessoesSSE.Criar)
+
+		// gestao de fila e qr code de reconexao (fase 9) -- painel de
+		// supervisao do CRM, nunca exposto ao browser diretamente.
+		r.Get("/api/zapi/fila", zapiAdmin.Fila)
+		r.Delete("/api/zapi/fila", zapiAdmin.LimparFila)
+		r.Delete("/api/zapi/fila/{id}", zapiAdmin.LimparItemFila)
+		r.Get("/api/zapi/qrcode", zapiAdmin.QRCode)
 	})
 
 	return r

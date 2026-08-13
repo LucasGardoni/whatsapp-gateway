@@ -101,6 +101,7 @@ type Mensagem struct {
 	CriadoEm      pgtype.Timestamp `json:"criado_em"`
 	HashAnterior  *string          `json:"hash_anterior"`
 	Hash          *string          `json:"hash"`
+	UltimoErro    *string          `json:"ultimo_erro"`
 }
 
 type MensagemInterna struct {

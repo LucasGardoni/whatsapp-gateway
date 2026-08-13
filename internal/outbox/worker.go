@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/LucasGardoni/whatsapp-gateway/internal/dlp"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/sse"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
@@ -24,7 +26,7 @@ type Fila interface {
 	SelecionarPendentesParaEnvio(ctx context.Context, limite int32) ([]store.SelecionarPendentesParaEnvioRow, error)
 	MarcarMensagemEnviada(ctx context.Context, arg store.MarcarMensagemEnviadaParams) error
 	MarcarMensagemParaRetentativa(ctx context.Context, arg store.MarcarMensagemParaRetentativaParams) error
-	MarcarMensagemFalhaDefinitiva(ctx context.Context, id int64) error
+	MarcarMensagemFalhaDefinitiva(ctx context.Context, arg store.MarcarMensagemFalhaDefinitivaParams) error
 	MarcarMensagemBloqueada(ctx context.Context, id int64) error
 	RegistrarOcorrenciaDLP(ctx context.Context, arg store.RegistrarOcorrenciaDLPParams) error
 	ResetarMensagensPresasEmEnvio(ctx context.Context) error
@@ -127,27 +129,37 @@ func (w *Worker) processarMensagem(ctx context.Context, m store.SelecionarPenden
 	destino, err := destinatario(m)
 	if err != nil {
 		slog.Error("outbox: mensagem sem destinatario valido, falha definitiva", "mensagem_id", m.ID, "erro", err)
-		w.marcarFalhaDefinitiva(ctx, m)
+		w.marcarFalhaDefinitiva(ctx, m, err)
 		return
 	}
 
-	if m.Texto == nil {
-		slog.Error("outbox: mensagem sem texto, envio de midia ainda nao suportado", "mensagem_id", m.ID)
-		w.marcarFalhaDefinitiva(ctx, m)
-		return
+	// legenda vale tanto pro corpo do texto quanto pro caption de uma midia
+	// -- dlp roda em qualquer um dos dois casos, antes de qualquer entrega
+	// ao provedor. Nenhum caminho de envio pode contornar isso (secao 6,
+	// diretriz 10).
+	var legenda string
+	if m.Texto != nil {
+		legenda = *m.Texto
+	}
+	if legenda != "" {
+		veredito := w.dlp.Avaliar(legenda)
+		w.registrarOcorrenciasDLP(ctx, m.ID, veredito)
+		if veredito.Bloqueado() {
+			slog.Warn("outbox: mensagem bloqueada pelo dlp", "mensagem_id", m.ID)
+			w.marcarBloqueada(ctx, m)
+			return
+		}
 	}
 
-	// dlp roda antes de qualquer entrega ao provedor -- nenhum caminho de
-	// envio pode contornar isso (secao 6, diretriz 10).
-	veredito := w.dlp.Avaliar(*m.Texto)
-	w.registrarOcorrenciasDLP(ctx, m.ID, veredito)
-	if veredito.Bloqueado() {
-		slog.Warn("outbox: mensagem bloqueada pelo dlp", "mensagem_id", m.ID)
-		w.marcarBloqueada(ctx, m)
+	// erro de validacao (conteudo ausente, arquivo ilegivel): falha direto,
+	// sem passar por tratarErroEnvio -- retentar nao muda nada aqui, o
+	// mesmo tratamento que o destinatario invalido ja recebe acima.
+	resultado, err, valido := w.enviar(ctx, m, destino, legenda)
+	if !valido {
+		slog.Error("outbox: mensagem invalida para envio, falha definitiva", "mensagem_id", m.ID, "erro", err)
+		w.marcarFalhaDefinitiva(ctx, m, err)
 		return
 	}
-
-	resultado, err := w.provedor.Enviar(ctx, provedor.MensagemTexto{Destinatario: destino, Texto: *m.Texto})
 	if err != nil {
 		w.tratarErroEnvio(ctx, m, err)
 		return
@@ -164,6 +176,40 @@ func (w *Worker) processarMensagem(ctx context.Context, m store.SelecionarPenden
 	w.publicar(m, "enviada")
 }
 
+// enviar despacha para o endpoint certo conforme o tipo da mensagem.
+// valido=false significa que o problema e da propria mensagem (conteudo
+// ausente, arquivo ilegivel) e nunca vai se resolver com retentativa --
+// dessa forma o chamador sabe falhar direto em vez de reagendar.
+func (w *Worker) enviar(ctx context.Context, m store.SelecionarPendentesParaEnvioRow, destino, legenda string) (resultado *provedor.ResultadoEnvio, err error, valido bool) {
+	if m.Tipo == "texto" {
+		if legenda == "" {
+			return nil, fmt.Errorf("mensagem %d: tipo texto sem conteudo", m.ID), false
+		}
+		resultado, err = w.provedor.Enviar(ctx, provedor.MensagemTexto{Destinatario: destino, Texto: legenda})
+		return resultado, err, true
+	}
+
+	// midia: le o arquivo do disco (mesma pasta onde a recepcao grava
+	// anexos recebidos, fase 4) e manda pelo endpoint z-api correspondente
+	// ao tipo (fase 9 -- antes disso o outbox so sabia mandar texto).
+	if m.MidiaCaminho == nil || *m.MidiaCaminho == "" {
+		return nil, fmt.Errorf("mensagem %d: tipo %s sem midia_caminho", m.ID, m.Tipo), false
+	}
+	conteudo, err := midia.CodificarBase64(*m.MidiaCaminho)
+	if err != nil {
+		return nil, err, false
+	}
+
+	resultado, err = w.provedor.EnviarMidia(ctx, provedor.MensagemMidia{
+		Destinatario:   destino,
+		Tipo:           m.Tipo,
+		ConteudoBase64: conteudo,
+		NomeArquivo:    filepath.Base(*m.MidiaCaminho),
+		Legenda:        legenda,
+	})
+	return resultado, err, true
+}
+
 func (w *Worker) tratarErroEnvio(ctx context.Context, m store.SelecionarPendentesParaEnvioRow, err error) {
 	retentavel := true // erro nao classificado: mais seguro reenfileirar do que descartar
 	var classificado provedor.ErroClassificado
@@ -174,25 +220,41 @@ func (w *Worker) tratarErroEnvio(ctx context.Context, m store.SelecionarPendente
 	tentativasApos := int(m.Tentativas) + 1
 	if !retentavel || tentativasApos >= w.cfg.MaxTentativas {
 		slog.Error("outbox: falha definitiva no envio", "mensagem_id", m.ID, "tentativas", tentativasApos, "erro", err)
-		w.marcarFalhaDefinitiva(ctx, m)
+		w.marcarFalhaDefinitiva(ctx, m, err)
 		return
 	}
 
 	tentarEm := time.Now().Add(calcularBackoff(int(m.Tentativas)))
 	if err := w.fila.MarcarMensagemParaRetentativa(ctx, store.MarcarMensagemParaRetentativaParams{
-		ID:       m.ID,
-		TentarEm: pgtype.Timestamp{Time: tentarEm, Valid: true},
+		ID:         m.ID,
+		TentarEm:   pgtype.Timestamp{Time: tentarEm, Valid: true},
+		UltimoErro: naoVazio(motivoErro(err)),
 	}); err != nil {
 		slog.Error("outbox: falha ao reagendar mensagem", "mensagem_id", m.ID, "erro", err)
 	}
 }
 
-func (w *Worker) marcarFalhaDefinitiva(ctx context.Context, m store.SelecionarPendentesParaEnvioRow) {
-	if err := w.fila.MarcarMensagemFalhaDefinitiva(ctx, m.ID); err != nil {
+func (w *Worker) marcarFalhaDefinitiva(ctx context.Context, m store.SelecionarPendentesParaEnvioRow, causa error) {
+	if err := w.fila.MarcarMensagemFalhaDefinitiva(ctx, store.MarcarMensagemFalhaDefinitivaParams{
+		ID:         m.ID,
+		UltimoErro: naoVazio(motivoErro(causa)),
+	}); err != nil {
 		slog.Error("outbox: falha ao marcar falha definitiva", "mensagem_id", m.ID, "erro", err)
 		return
 	}
 	w.publicar(m, "falha")
+}
+
+// motivoErro limita o tamanho gravado em mensagem.ultimo_erro -- o texto
+// do erro pode incluir o corpo inteiro da resposta da z-api (ver ErroEnvio),
+// e isso nao precisa virar uma coluna gigante (fase 9).
+func motivoErro(err error) string {
+	const tamanhoMaximo = 500
+	msg := err.Error()
+	if len(msg) > tamanhoMaximo {
+		return msg[:tamanhoMaximo]
+	}
+	return msg
 }
 
 func (w *Worker) marcarBloqueada(ctx context.Context, m store.SelecionarPendentesParaEnvioRow) {
