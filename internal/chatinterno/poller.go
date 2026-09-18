@@ -25,7 +25,7 @@ import (
 // real.
 type Leitor interface {
 	BuscarUltimoIDMensagemInterna(ctx context.Context) (int64, error)
-	ListarMensagensInternasAPartirDe(ctx context.Context, id int64) ([]store.MensagemInterna, error)
+	ListarMensagensInternasAPartirDe(ctx context.Context, id int64) ([]store.ListarMensagensInternasAPartirDeRow, error)
 }
 
 type Config struct {
@@ -81,7 +81,7 @@ func (p *Poller) verificar(ctx context.Context) {
 	}
 
 	for _, m := range mensagens {
-		p.hub.PublicarTodos(sse.Evento{
+		p.hub.PublicarNaAplicacao(sse.AplicacaoCRM, sse.Evento{
 			Tipo:       sse.EventoMensagemInternaNova,
 			MensagemID: m.ID,
 			CanalID:    m.CanalID,

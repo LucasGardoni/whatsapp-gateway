@@ -15,6 +15,28 @@ type Alertum struct {
 	CriadoEm pgtype.Timestamp `json:"criado_em"`
 }
 
+type Aplicacao struct {
+	ID        int64            `json:"id"`
+	Codigo    string           `json:"codigo"`
+	Nome      string           `json:"nome"`
+	TokenHash string           `json:"token_hash"`
+	Ativo     bool             `json:"ativo"`
+	CriadoEm  pgtype.Timestamp `json:"criado_em"`
+}
+
+type Canal struct {
+	ID           int64            `json:"id"`
+	AplicacaoID  int64            `json:"aplicacao_id"`
+	CanalExterno string           `json:"canal_externo"`
+	CriadoEm     pgtype.Timestamp `json:"criado_em"`
+}
+
+type CanalAssinante struct {
+	CanalID        int64            `json:"canal_id"`
+	DestinoExterno string           `json:"destino_externo"`
+	CriadoEm       pgtype.Timestamp `json:"criado_em"`
+}
+
 type CanalInterno struct {
 	ID     int64  `json:"id"`
 	Nome   string `json:"nome"`
@@ -71,18 +93,27 @@ type Faq struct {
 }
 
 type Lead struct {
-	ID               int64            `json:"id"`
-	Nome             *string          `json:"nome"`
-	TelefoneE164     *string          `json:"telefone_e164"`
-	ChatLid          *string          `json:"chat_lid"`
-	Origem           *string          `json:"origem"`
-	EmpreendimentoID *int64           `json:"empreendimento_id"`
-	LoteID           *int64           `json:"lote_id"`
-	Estado           string           `json:"estado"`
-	CorretorID       *int64           `json:"corretor_id"`
-	CriadoEm         pgtype.Timestamp `json:"criado_em"`
-	AdSourceID       *string          `json:"ad_source_id"`
-	CtwaClid         *string          `json:"ctwa_clid"`
+	ID                 int64            `json:"id"`
+	Nome               *string          `json:"nome"`
+	TelefoneE164       *string          `json:"telefone_e164"`
+	ChatLid            *string          `json:"chat_lid"`
+	Origem             *string          `json:"origem"`
+	EmpreendimentoID   *int64           `json:"empreendimento_id"`
+	LoteID             *int64           `json:"lote_id"`
+	Estado             string           `json:"estado"`
+	CorretorID         *int64           `json:"corretor_id"`
+	CriadoEm           pgtype.Timestamp `json:"criado_em"`
+	AdSourceID         *string          `json:"ad_source_id"`
+	CtwaClid           *string          `json:"ctwa_clid"`
+	EstagioComercial   string           `json:"estagio_comercial"`
+	EstagioEntrouEm    pgtype.Timestamp `json:"estagio_entrou_em"`
+	Valor              pgtype.Numeric   `json:"valor"`
+	NomeEmpreendimento *string          `json:"nome_empreendimento"`
+	Tipologia          *string          `json:"tipologia"`
+	FormaPagamento     *string          `json:"forma_pagamento"`
+	ProximoPassoTexto  *string          `json:"proximo_passo_texto"`
+	ProximoPassoEm     pgtype.Timestamp `json:"proximo_passo_em"`
+	Notas              *string          `json:"notas"`
 }
 
 type LeadPayloadBruto struct {
@@ -111,14 +142,16 @@ type Mensagem struct {
 	HashAnterior  *string          `json:"hash_anterior"`
 	Hash          *string          `json:"hash"`
 	UltimoErro    *string          `json:"ultimo_erro"`
+	AplicacaoID   *int64           `json:"aplicacao_id"`
 }
 
 type MensagemInterna struct {
-	ID        int64            `json:"id"`
-	CanalID   int64            `json:"canal_id"`
-	UsuarioID int64            `json:"usuario_id"`
-	Texto     string           `json:"texto"`
-	CriadoEm  pgtype.Timestamp `json:"criado_em"`
+	ID          int64            `json:"id"`
+	CanalID     int64            `json:"canal_id"`
+	UsuarioID   int64            `json:"usuario_id"`
+	Texto       string           `json:"texto"`
+	CriadoEm    pgtype.Timestamp `json:"criado_em"`
+	AplicacaoID *int64           `json:"aplicacao_id"`
 }
 
 type MidiaBiblioteca struct {
@@ -150,12 +183,22 @@ type ProvedorSaude struct {
 	UltimoErro   *string          `json:"ultimo_erro"`
 }
 
+type PushSubscription struct {
+	ID         int64            `json:"id"`
+	CorretorID int64            `json:"corretor_id"`
+	Endpoint   string           `json:"endpoint"`
+	P256dh     string           `json:"p256dh"`
+	Auth       string           `json:"auth"`
+	CriadoEm   pgtype.Timestamp `json:"criado_em"`
+}
+
 type SlaEvento struct {
 	ID         int64            `json:"id"`
 	LeadID     int64            `json:"lead_id"`
 	CorretorID *int64           `json:"corretor_id"`
 	Tipo       string           `json:"tipo"`
 	OcorridoEm pgtype.Timestamp `json:"ocorrido_em"`
+	Detalhe    *string          `json:"detalhe"`
 }
 
 type Usuario struct {

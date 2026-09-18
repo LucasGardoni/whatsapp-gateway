@@ -77,20 +77,64 @@ func RegistrarHash(ctx context.Context, repo Repositorio, mensagemID int64, camp
 	return nil
 }
 
+// VersaoFormula e a versao da composicao do hash (barramento, fase 2). A
+// 1 nao tinha `origem`; a 2 tem. As duas convivem na mesma tabela: quem
+// for verificar a cadeia precisa saber qual formula aplicar a cada trecho,
+// e e o parametro ChaveFormulaAPartirDeMensagemID que diz onde e o corte.
+//
+// Mudar a formula de novo exige: subir este numero, gravar um corte novo e
+// atualizar docs/AUDITORIA-INTEGRACAO.md. Nao ha migracao de hash antigo
+// -- recalcular seria justamente o que a cadeia existe para impedir.
+const VersaoFormula = 2
+
+// ChaveVersaoFormula e ChaveFormulaAPartirDeMensagemID moram em
+// `parametro` e sao o que torna a troca de formula verificavel depois.
+const (
+	ChaveVersaoFormula              = "auditoria_versao_formula"
+	ChaveFormulaAPartirDeMensagemID = "auditoria_formula_2_a_partir_de_mensagem_id"
+)
+
+// Mensagem sao os campos estaveis que entram no hash -- o que nunca muda
+// depois de a mensagem ser criada.
+//
+// E struct, e nao uma lista de parametros posicionais, porque a ordem dos
+// campos AQUI e a formula: trocar dois `string` adjacentes numa chamada
+// compilaria, passaria nos testes de handler e quebraria a cadeia em
+// silencio. Com nome de campo, o erro nao tem como acontecer.
+type Mensagem struct {
+	ID         int64
+	ConversaID int64
+	// Direcao e "entrada" ou "saida".
+	Direcao       string
+	Tipo          string
+	Texto         string
+	MidiaCaminho  string
+	ProvedorMsgID string
+	// Origem e a procedencia (fase 2): o codigo da aplicacao autenticada
+	// nas mensagens de saida, o provedor nas de entrada. Vazia no caminho
+	// legado, que nao identifica aplicacao -- some na fase 8.
+	//
+	// Nunca vem do corpo da requisicao. Se viesse, o Portal poderia assinar
+	// uma mensagem como se fosse o CRM, e a cadeia passaria a provar uma
+	// procedencia falsa com toda a aparencia de verdadeira.
+	Origem string
+}
+
 // CamposMensagem monta os campos estaveis na ordem certa -- exportado pra
 // os dois chamadores (webhook zapi e handler de mensagens) nao divergirem
-// na composicao do hash. Campo vazio (ex.: midiaCaminho numa mensagem de
+// na composicao do hash. Campo vazio (ex.: MidiaCaminho numa mensagem de
 // texto) so entra como string vazia, sem pular posicao -- a ordem e que
 // da o significado de cada campo no hash.
-func CamposMensagem(mensagemID, conversaID int64, direcao, tipo, texto, midiaCaminho, provedorMsgID string) []string {
+func CamposMensagem(m Mensagem) []string {
 	return []string{
-		fmt.Sprintf("%d", mensagemID),
-		fmt.Sprintf("%d", conversaID),
-		direcao,
-		tipo,
-		texto,
-		midiaCaminho,
-		provedorMsgID,
+		fmt.Sprintf("%d", m.ID),
+		fmt.Sprintf("%d", m.ConversaID),
+		m.Direcao,
+		m.Tipo,
+		m.Texto,
+		m.MidiaCaminho,
+		m.ProvedorMsgID,
+		m.Origem,
 	}
 }
 

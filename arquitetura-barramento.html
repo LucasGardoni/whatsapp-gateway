@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Barramento de Mensagens</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --surface-2: #eef0f4;
+    --border: #d6dae1;
+    --border-forte: #b9bfc9;
+    --texto: #16191d;
+    --texto-fraco: #5c636e;
+    --texto-tenue: #878e99;
+
+    --interno: #7c5cff;
+    --interno-fraco: #7c5cff22;
+    --whatsapp: #16a34a;
+    --whatsapp-fraco: #16a34a22;
+    --evento: #0ea5e9;
+    --evento-fraco: #0ea5e922;
+    --entrada: #e0952a;
+    --entrada-fraco: #e0952a22;
+    --perigo: #dc2626;
+
+    --sombra: 0 1px 2px rgba(16,19,23,.06), 0 6px 20px rgba(16,19,23,.06);
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0d1014;
+      --surface: #161a20;
+      --surface-2: #1d222a;
+      --border: #2a3039;
+      --border-forte: #3c444f;
+      --texto: #e8eaee;
+      --texto-fraco: #a2aab6;
+      --texto-tenue: #737c89;
+      --interno: #a78bfa;
+      --interno-fraco: #a78bfa1f;
+      --whatsapp: #4ade80;
+      --whatsapp-fraco: #4ade801f;
+      --evento: #38bdf8;
+      --evento-fraco: #38bdf81f;
+      --entrada: #fbbf24;
+      --entrada-fraco: #fbbf241f;
+      --perigo: #f87171;
+      --sombra: 0 1px 2px rgba(0,0,0,.4), 0 8px 28px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1014; --surface: #161a20; --surface-2: #1d222a;
+    --border: #2a3039; --border-forte: #3c444f;
+    --texto: #e8eaee; --texto-fraco: #a2aab6; --texto-tenue: #737c89;
+    --interno: #a78bfa; --interno-fraco: #a78bfa1f;
+    --whatsapp: #4ade80; --whatsapp-fraco: #4ade801f;
+    --evento: #38bdf8; --evento-fraco: #38bdf81f;
+    --entrada: #fbbf24; --entrada-fraco: #fbbf241f;
+    --perigo: #f87171;
+    --sombra: 0 1px 2px rgba(0,0,0,.4), 0 8px 28px rgba(0,0,0,.35);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--texto);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.55; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1400px; margin: 0 auto; padding: 32px 16px 72px; }
+
+  header { margin-bottom: 26px; }
+  h1 { font-size: clamp(22px, 3.4vw, 32px); margin: 0 0 6px; letter-spacing: -.02em; }
+  .sub { color: var(--texto-fraco); margin: 0; max-width: 72ch; font-size: 15px; }
+
+  .barra {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    margin: 22px 0 14px; padding: 10px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--sombra);
+  }
+  button {
+    font: inherit; font-size: 13.5px; font-weight: 550; cursor: pointer;
+    padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border-forte);
+    background: var(--surface-2); color: var(--texto); transition: .15s;
+  }
+  button:hover { border-color: var(--texto-tenue); }
+  button.on { color: #fff; border-color: transparent; }
+  button[data-c="interno"].on { background: var(--interno); }
+  button[data-c="whatsapp"].on { background: var(--whatsapp); }
+  button[data-c="entrada"].on { background: var(--entrada); color: #241a05; }
+  button[data-c="tudo"].on { background: var(--evento); color: #04242f; }
+  .espaco { flex: 1 1 auto; }
+
+  .narracao {
+    display: flex; gap: 12px; align-items: flex-start;
+    padding: 14px 16px; border-radius: 12px; min-height: 76px;
+    background: var(--surface); border: 1px solid var(--border);
+    box-shadow: var(--sombra); margin-bottom: 14px;
+  }
+  .passo-num {
+    flex: 0 0 auto; width: 26px; height: 26px; border-radius: 7px;
+    display: grid; place-items: center; font-size: 13px; font-weight: 700;
+    background: var(--surface-2); color: var(--texto-fraco); font-family: var(--mono);
+  }
+  .narracao.ativa .passo-num { background: var(--cor, var(--evento)); color: #08121a; }
+  #passo-titulo { font-weight: 600; font-size: 15px; margin: 0 0 2px; }
+  #passo-texto { margin: 0; color: var(--texto-fraco); font-size: 14px; }
+
+  .palco {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; padding: 8px; box-shadow: var(--sombra); overflow: hidden;
+  }
+  svg { width: 100%; height: auto; display: block; }
+
+  .caixa { fill: var(--surface-2); stroke: var(--border-forte); stroke-width: 1.25; }
+  .zona { fill: none; stroke: var(--border); stroke-width: 1.25; stroke-dasharray: 5 4; }
+  .rotulo { fill: var(--texto); font-size: 14px; font-weight: 600; }
+  .rotulo-p { fill: var(--texto-fraco); font-size: 11.5px; }
+  .mono { font-family: var(--mono); font-size: 11.5px; fill: var(--texto-fraco); }
+  .zona-titulo { fill: var(--texto-tenue); font-size: 11px; font-weight: 700; letter-spacing: .1em; }
+  .trilha { fill: none; stroke: var(--border-forte); stroke-width: 1.5; opacity: .5; }
+
+  .lane-int { fill: var(--interno-fraco); stroke: var(--interno); stroke-width: 1.25; }
+  .lane-wa  { fill: var(--whatsapp-fraco); stroke: var(--whatsapp); stroke-width: 1.25; }
+  .lane-ent { fill: var(--entrada-fraco); stroke: var(--entrada); stroke-width: 1.5; }
+  .lane-evt { fill: var(--evento-fraco); stroke: var(--evento); stroke-width: 1.25; }
+
+  .no { transition: filter .25s; }
+  .no.ativo { filter: drop-shadow(0 0 9px var(--cor-ativo, var(--evento))); }
+  .no.ativo .caixa { stroke-width: 2.25; stroke: var(--cor-ativo, var(--evento)); }
+
+  .grade { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); margin-top: 22px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px 18px; box-shadow: var(--sombra);
+  }
+  .card h3 { margin: 0 0 10px; font-size: 14px; letter-spacing: .04em; text-transform: uppercase; color: var(--texto-tenue); }
+  .card ul { margin: 0; padding-left: 18px; font-size: 14px; color: var(--texto-fraco); }
+  .card li { margin-bottom: 6px; }
+  .card li b { color: var(--texto); font-weight: 600; }
+  code { font-family: var(--mono); font-size: .89em; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+
+  .legenda { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 14px; font-size: 13px; color: var(--texto-fraco); }
+  .legenda span { display: inline-flex; align-items: center; gap: 7px; }
+  .bolinha { width: 11px; height: 11px; border-radius: 50%; }
+
+  @media (max-width: 640px) {
+    .wrap { padding: 20px 12px 48px; }
+    .barra { position: sticky; top: 0; z-index: 5; }
+  }
+  @media (prefers-reduced-motion: reduce) { .no { transition: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Barramento de Mensagens</h1>
+  <p class="sub">
+    Como as aplicações em produção se conectam ao gateway. Um caminho de entrada,
+    duas saídas (Z-API e chat interno), persistência e auditoria comuns, e distribuição
+    em tempo real por <code>pg_notify</code> + SSE. O gateway nunca sabe quem é o usuário.
+  </p>
+</header>
+
+<div class="barra">
+  <button data-c="interno"  onclick="tocar('interno')">▶ Mensagem interna</button>
+  <button data-c="whatsapp" onclick="tocar('whatsapp')">▶ Envio WhatsApp</button>
+  <button data-c="entrada"  onclick="tocar('recepcao')">▶ Recebimento WhatsApp</button>
+  <button data-c="tudo"     onclick="tocar('tudo')">▶ Tudo em sequência</button>
+  <span class="espaco"></span>
+  <button onclick="parar()">■ Parar</button>
+  <button onclick="tema()">◐ Tema</button>
+</div>
+
+<div class="narracao" id="narracao">
+  <div class="passo-num" id="passo-num">—</div>
+  <div>
+    <p id="passo-titulo">Escolha um cenário acima</p>
+    <p id="passo-texto">Cada cenário percorre o caminho real de uma mensagem, do backend da aplicação até a tela do usuário.</p>
+  </div>
+</div>
+
+<div class="palco">
+<svg viewBox="0 0 1320 900" role="img" aria-label="Diagrama do barramento de mensagens">
+  <defs>
+    <marker id="seta" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="currentColor" opacity=".55"/>
+    </marker>
+  </defs>
+
+  <!-- ===== ZONAS ===== -->
+  <rect class="zona" x="16"  y="44"  width="252" height="330" rx="12"/>
+  <text class="zona-titulo" x="28" y="34">APLICAÇÕES · BACKEND PRÓPRIO</text>
+
+  <rect class="zona" x="292" y="44"  width="556" height="430" rx="12"/>
+  <text class="zona-titulo" x="304" y="34">GATEWAY · TRANSPORTE</text>
+
+  <rect class="zona" x="880" y="44"  width="230" height="420" rx="12"/>
+  <text class="zona-titulo" x="892" y="34">MUNDO EXTERNO</text>
+
+  <rect class="zona" x="292" y="506" width="778" height="134" rx="12"/>
+  <text class="zona-titulo" x="304" y="496">PERSISTÊNCIA · AUDITORIA · NOTIFICAÇÃO</text>
+
+  <rect class="zona" x="292" y="676" width="618" height="192" rx="12"/>
+  <text class="zona-titulo" x="304" y="666">TEMPO REAL · MULTI-INSTÂNCIA</text>
+
+  <!-- ===== TRILHAS ===== -->
+  <g color="var(--texto-tenue)">
+    <path id="p-crm-ent"    class="trilha" marker-end="url(#seta)" d="M244,92  C272,92  274,178 292,178"/>
+    <path id="p-portal-ent" class="trilha" marker-end="url(#seta)" d="M244,164 C272,164 276,178 292,178"/>
+    <path id="p-rd-ent"     class="trilha" marker-end="url(#seta)" d="M244,236 C272,236 274,178 292,178"/>
+    <path id="p-fut-ent"    class="trilha" marker-end="url(#seta)" d="M244,308 C276,308 276,178 292,178"/>
+
+    <path id="p-ent-int" class="trilha" marker-end="url(#seta)" d="M570,212 C570,244 424,240 424,272"/>
+    <path id="p-ent-wa"  class="trilha" marker-end="url(#seta)" d="M570,212 C570,244 716,240 716,272"/>
+
+    <path id="p-wa-zapi" class="trilha" marker-end="url(#seta)" d="M840,340 C866,340 872,318 894,318"/>
+    <path id="p-zapi-wpp" class="trilha" marker-end="url(#seta)" d="M995,346 L995,388"/>
+
+    <path id="p-webhook" class="trilha" marker-end="url(#seta)" d="M948,290 C944,214 900,150 848,164"/>
+
+    <path id="p-int-pg" class="trilha" marker-end="url(#seta)" d="M424,452 L424,506"/>
+    <path id="p-wa-pg"  class="trilha" marker-end="url(#seta)" d="M716,452 L716,506"/>
+
+    <path id="p-pg-a" class="trilha" marker-end="url(#seta)" d="M690,640 C690,668 440,664 440,700"/>
+    <path id="p-pg-b" class="trilha" marker-end="url(#seta)" d="M690,640 C706,704 640,782 546,806"/>
+
+    <path id="p-a-nav" class="trilha" marker-end="url(#seta)" d="M546,730 L706,730"/>
+    <path id="p-b-nav" class="trilha" marker-end="url(#seta)" d="M546,818 L706,818"/>
+  </g>
+
+  <!-- ===== APLICAÇÕES ===== -->
+  <g class="no" id="n-crm" style="--cor-ativo:var(--whatsapp)">
+    <rect class="caixa" x="32" y="64" width="212" height="56" rx="9"/>
+    <text class="rotulo"   x="48" y="88">CRM</text>
+    <text class="rotulo-p" x="48" y="107">usuários próprios · chave de cifra</text>
+  </g>
+  <g class="no" id="n-portal" style="--cor-ativo:var(--interno)">
+    <rect class="caixa" x="32" y="136" width="212" height="56" rx="9"/>
+    <text class="rotulo"   x="48" y="160">Portal Líder</text>
+    <text class="rotulo-p" x="48" y="179">usuários próprios · chave de cifra</text>
+  </g>
+  <g class="no" id="n-rd">
+    <rect class="caixa" x="32" y="208" width="212" height="56" rx="9"/>
+    <text class="rotulo"   x="48" y="232">RD Líder</text>
+    <text class="rotulo-p" x="48" y="251">usuários próprios · chave de cifra</text>
+  </g>
+  <g class="no" id="n-fut">
+    <rect class="caixa" x="32" y="280" width="212" height="56" rx="9" stroke-dasharray="5 4"/>
+    <text class="rotulo"   x="48" y="304">Plataforma futura</text>
+    <text class="rotulo-p" x="48" y="323">só registrar uma aplicação</text>
+  </g>
+  <text class="mono" x="32" y="360">permissão + identidade vivem aqui</text>
+
+  <!-- ===== ENTRADA ===== -->
+  <g class="no" id="n-entrada" style="--cor-ativo:var(--entrada)">
+    <rect class="lane-ent" x="312" y="148" width="516" height="64" rx="10"/>
+    <text class="rotulo" x="330" y="175">POST /v1/mensagens — entrada única</text>
+    <text class="mono"   x="330" y="196">Authorization: Bearer &lt;token da aplicação&gt;  ·  origem derivada do token</text>
+  </g>
+
+  <!-- ===== LANE INTERNO ===== -->
+  <g class="no" id="n-lane-int" style="--cor-ativo:var(--interno)">
+    <rect class="lane-int" x="312" y="272" width="224" height="180" rx="10"/>
+    <text class="rotulo"   x="328" y="296" style="fill:var(--interno)">canal = interno</text>
+    <rect class="caixa" x="328" y="308" width="192" height="38" rx="7"/>
+    <text class="rotulo-p" x="342" y="332">payload cifrado · opaco</text>
+    <rect class="caixa" x="328" y="352" width="192" height="38" rx="7"/>
+    <text class="rotulo-p" x="342" y="376">DLP não roda · sem retry</text>
+    <rect class="caixa" x="328" y="396" width="192" height="38" rx="7"/>
+    <text class="rotulo-p" x="342" y="420">lista de assinantes (opaca)</text>
+  </g>
+
+  <!-- ===== LANE WHATSAPP ===== -->
+  <g class="no" id="n-lane-wa" style="--cor-ativo:var(--whatsapp)">
+    <rect class="lane-wa" x="604" y="272" width="224" height="180" rx="10"/>
+    <text class="rotulo"   x="620" y="296" style="fill:var(--whatsapp)">canal = whatsapp</text>
+    <rect class="caixa" x="620" y="308" width="192" height="38" rx="7"/>
+    <text class="rotulo-p" x="634" y="332">DLP (texto em claro)</text>
+    <rect class="caixa" x="620" y="352" width="192" height="38" rx="7"/>
+    <text class="rotulo-p" x="634" y="376">outbox · retry · backoff</text>
+    <rect class="caixa" x="620" y="396" width="192" height="38" rx="7"/>
+    <text class="rotulo-p" x="634" y="420">provedor (troca sem tocar app)</text>
+  </g>
+
+  <!-- ===== EXTERNO ===== -->
+  <g class="no" id="n-zapi" style="--cor-ativo:var(--whatsapp)">
+    <rect class="caixa" x="894" y="290" width="202" height="56" rx="9"/>
+    <text class="rotulo"   x="910" y="314">Z-API</text>
+    <text class="rotulo-p" x="910" y="333">instância única da empresa</text>
+  </g>
+  <g class="no" id="n-wpp" style="--cor-ativo:var(--whatsapp)">
+    <rect class="caixa" x="894" y="388" width="202" height="56" rx="9"/>
+    <text class="rotulo"   x="910" y="412">WhatsApp</text>
+    <text class="rotulo-p" x="910" y="431">lead / cliente final</text>
+  </g>
+  <text class="mono" x="894" y="240">webhook de entrada</text>
+  <text class="mono" x="894" y="258">volta pelo mesmo caminho</text>
+
+  <!-- ===== POSTGRES ===== -->
+  <g class="no" id="n-pg" style="--cor-ativo:var(--evento)">
+    <rect class="caixa" x="312" y="526" width="742" height="96" rx="10"/>
+    <text class="rotulo" x="330" y="552">PostgreSQL 16</text>
+    <rect class="caixa" x="330" y="564" width="196" height="40" rx="7"/>
+    <text class="rotulo-p" x="344" y="580">mensagem</text>
+    <text class="mono"     x="344" y="596">claro · status · outbox</text>
+    <rect class="caixa" x="540" y="564" width="196" height="40" rx="7"/>
+    <text class="rotulo-p" x="554" y="580">mensagem_interna</text>
+    <text class="mono"     x="554" y="596">ciphertext · opaco</text>
+    <rect class="caixa" x="750" y="564" width="140" height="40" rx="7"/>
+    <text class="rotulo-p" x="764" y="580">cadeia de hash</text>
+    <text class="mono"     x="764" y="596">ordem + origem</text>
+    <rect class="lane-evt" x="904" y="564" width="134" height="40" rx="7"/>
+    <text class="rotulo-p" x="918" y="580" style="fill:var(--evento)">pg_notify</text>
+    <text class="mono"     x="918" y="596">'gw_evento'</text>
+  </g>
+
+  <!-- ===== INSTÂNCIAS ===== -->
+  <g class="no" id="n-inst-a" style="--cor-ativo:var(--evento)">
+    <rect class="caixa" x="312" y="700" width="234" height="60" rx="9"/>
+    <text class="rotulo"   x="328" y="724">Gateway — instância A</text>
+    <text class="mono"     x="328" y="743">LISTEN · hub SSE por destino</text>
+  </g>
+  <g class="no" id="n-inst-b" style="--cor-ativo:var(--evento)">
+    <rect class="caixa" x="312" y="788" width="234" height="60" rx="9"/>
+    <text class="rotulo"   x="328" y="812">Gateway — instância B</text>
+    <text class="mono"     x="328" y="831">LISTEN · hub SSE por destino</text>
+  </g>
+
+  <g class="no" id="n-nav1" style="--cor-ativo:var(--evento)">
+    <rect class="caixa" x="706" y="700" width="196" height="60" rx="9"/>
+    <text class="rotulo"   x="722" y="724">Navegador · CRM</text>
+    <text class="mono"     x="722" y="743">SSE  crm:u-1042</text>
+  </g>
+  <g class="no" id="n-nav2" style="--cor-ativo:var(--evento)">
+    <rect class="caixa" x="706" y="788" width="196" height="60" rx="9"/>
+    <text class="rotulo"   x="722" y="812">Navegador · Portal</text>
+    <text class="mono"     x="722" y="831">SSE  portal:u-8f3a</text>
+  </g>
+
+  <text class="mono" x="586" y="722">evento só com ID</text>
+  <text class="mono" x="586" y="810">nunca com conteúdo</text>
+
+  <!-- ===== PAINEL PERMISSÃO ===== -->
+  <rect class="caixa" x="938" y="676" width="366" height="192" rx="12"/>
+  <text class="rotulo" x="958" y="704">Onde a permissão acontece</text>
+  <text class="rotulo-p" x="958" y="730">1 · a aplicação autentica o próprio usuário</text>
+  <text class="rotulo-p" x="958" y="752">2 · ela decide se ele pode ler o destino D</text>
+  <text class="rotulo-p" x="958" y="774">3 · só então pede POST /v1/sessoes</text>
+  <text class="rotulo-p" x="958" y="796">4 · recebe token HMAC (60s, sem estado)</text>
+  <text class="rotulo-p" x="958" y="818">5 · o browser abre /eventos?token=…</text>
+  <text class="mono" x="958" y="846">o gateway honra o token e não pergunta mais nada</text>
+</svg>
+</div>
+
+<div class="legenda">
+  <span><i class="bolinha" style="background:var(--entrada)"></i> entrada única · autenticação da aplicação</span>
+  <span><i class="bolinha" style="background:var(--interno)"></i> mensagem interna · cifrada, opaca ao gateway</span>
+  <span><i class="bolinha" style="background:var(--whatsapp)"></i> WhatsApp · texto em claro, DLP e retry</span>
+  <span><i class="bolinha" style="background:var(--evento)"></i> evento de tempo real · só IDs</span>
+</div>
+
+<div class="grade">
+  <div class="card">
+    <h3>O gateway faz</h3>
+    <ul>
+      <li><b>Transporte</b> — fala Z-API, faz retry, backoff, dedupe e rate limit num lugar só.</li>
+      <li><b>Persistência</b> — um log durável de mensagem, com <code>aplicacao_id</code> de procedência.</li>
+      <li><b>Auditoria</b> — cadeia de hash única, provando ordem, integridade e origem.</li>
+      <li><b>Distribuição</b> — entrega o evento à conexão certa, por destino opaco.</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>O gateway nunca faz</h3>
+    <ul>
+      <li><b>Identidade</b> — não sabe quem é a pessoa por trás de <code>portal:u-8f3a</code>.</li>
+      <li><b>Permissão</b> — não decide quem lê o quê; honra o token que a aplicação emitiu.</li>
+      <li><b>Conteúdo interno</b> — é cifrado pela aplicação; ler é tecnicamente impossível.</li>
+      <li><b>Domínio</b> — nada de lead, corretor, SLA ou roleta dentro do Go.</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>A aplicação gere</h3>
+    <ul>
+      <li>Autenticar o próprio usuário e decidir permissão <b>antes</b> de pedir sessão.</li>
+      <li>Gerar, guardar e rotacionar a <b>chave de cifra</b> — perdê-la torna o histórico ilegível.</li>
+      <li>Manter a lista de assinantes de cada canal em dia.</li>
+      <li>Reconectar o <code>EventSource</code> e fazer catch-up por <code>ultimo_id</code>.</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Por que <code>pg_notify</code>, não Redis</h3>
+    <ul>
+      <li>O Postgres <b>já está lá</b> — menos peça móvel num serviço que vira ponto único de falha.</li>
+      <li>O limite de 8 KB não pesa: o evento carrega <b>só IDs</b>.</li>
+      <li><b>É transacional</b> — dispara no commit, eliminando o "publicar depois do commit" manual.</li>
+      <li>Perda durante queda é coberta por catch-up por <code>id</code> no reconnect.</li>
+    </ul>
+  </div>
+</div>
+
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const reduzir = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const svg = document.querySelector('svg');
+let execucao = 0;
+
+const CORES = {
+  interno:  'var(--interno)',
+  whatsapp: 'var(--whatsapp)',
+  entrada:  'var(--entrada)',
+  evento:   'var(--evento)'
+};
+
+function esperar(ms, id) {
+  return new Promise(res => {
+    const t = setInterval(() => {
+      if (id !== execucao) { clearInterval(t); res(false); }
+    }, 60);
+    setTimeout(() => { clearInterval(t); res(id === execucao); }, ms);
+  });
+}
+
+function acender(ids, cor) {
+  ids.forEach(i => {
+    const el = $(i);
+    if (!el) return;
+    el.classList.add('ativo');
+    el.style.setProperty('--cor-ativo', cor);
+    setTimeout(() => el.classList.remove('ativo'), 900);
+  });
+}
+
+// move um pacote ao longo de um <path>, e resolve ao chegar
+function pacote(pathId, cor, dur) {
+  return new Promise(res => {
+    const p = $(pathId);
+    if (!p) return res();
+    const total = p.getTotalLength();
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    const halo = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    const nucleo = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    halo.setAttribute('r', 13); halo.setAttribute('fill', cor); halo.setAttribute('opacity', '.18');
+    nucleo.setAttribute('r', 5.5); nucleo.setAttribute('fill', cor);
+    g.append(halo, nucleo);
+    svg.appendChild(g);
+
+    if (reduzir) { setTimeout(() => { g.remove(); res(); }, 120); return; }
+
+    const t0 = performance.now();
+    (function passo(agora) {
+      const k = Math.min((agora - t0) / dur, 1);
+      // easing suave nas pontas
+      const e = k < .5 ? 2*k*k : 1 - Math.pow(-2*k + 2, 2)/2;
+      const pt = p.getPointAtLength(e * total);
+      g.setAttribute('transform', `translate(${pt.x},${pt.y})`);
+      if (k < 1) requestAnimationFrame(passo);
+      else { g.remove(); res(); }
+    })(t0);
+  });
+}
+
+const CENAS = {
+  interno: { cor: 'interno', nome: 'Mensagem interna', passos: [
+    { p: 'p-portal-ent', c: 'interno', d: 900, on: ['n-portal','n-entrada'],
+      t: 'O Portal Líder cifra e envia',
+      x: 'O backend do Portal já autenticou o usuário dele. Cifra o texto com a própria chave (AES-256-GCM) e chama POST /v1/mensagens. O gateway identifica a aplicação pelo Bearer — a origem vem do token, nunca do corpo.' },
+    { p: 'p-ent-int', c: 'interno', d: 700, on: ['n-lane-int'],
+      t: 'Bifurcação: canal = interno',
+      x: 'Sem DLP, sem outbox, sem provedor. O gateway valida tamanho e algoritmo declarado — e nada mais. Ele não consegue ler o que está transportando.' },
+    { p: 'p-int-pg', c: 'interno', d: 700, on: ['n-pg'],
+      t: 'Grava o ciphertext e encadeia o hash',
+      x: 'Uma transação só: insert em mensagem_interna + elo na cadeia de auditoria sobre o ciphertext + pg_notify. A cadeia prova ordem, integridade e origem; o conteúdo se prova com a chave da aplicação.' },
+    { p: 'p-pg-a', c: 'evento', d: 800, on: ['n-inst-a'], par: 'p-pg-b',
+      t: 'NOTIFY acorda todas as instâncias',
+      x: 'pg_notify dispara no commit e chega às duas instâncias. Cada uma consulta canal_assinante e descobre quais das SUAS conexões abertas pertencem àquele canal.' },
+    { p: 'p-a-nav', c: 'evento', d: 700, on: ['n-nav1','n-nav2'], par: 'p-b-nav',
+      t: 'SSE entrega o evento — sem conteúdo',
+      x: 'O evento é {tipo, mensagem_id, canal_externo}. A aplicação busca o ciphertext por GET e decifra no backend dela. Quem não está na lista de assinantes não recebe nada: PublicarTodos não existe mais.' }
+  ]},
+
+  whatsapp: { cor: 'whatsapp', nome: 'Envio WhatsApp', passos: [
+    { p: 'p-crm-ent', c: 'whatsapp', d: 900, on: ['n-crm','n-entrada'],
+      t: 'O CRM envia texto em claro',
+      x: 'Mesmo endpoint, mesmo header, mesma autenticação. Só muda o campo canal. Aqui o texto NÃO é cifrado — o DLP precisa lê-lo para funcionar.' },
+    { p: 'p-ent-wa', c: 'whatsapp', d: 700, on: ['n-lane-wa'],
+      t: 'Bifurcação: canal = whatsapp',
+      x: 'DLP inspeciona e pode bloquear. Passando, a mensagem entra no outbox como pendente — nenhum caminho contorna o DLP.' },
+    { p: 'p-wa-pg', c: 'whatsapp', d: 650, on: ['n-pg'],
+      t: 'Persistida como pendente',
+      x: 'A fila é a própria tabela filtrada por status. Mesma cadeia de hash da mensagem interna: um log só para a empresa inteira.' },
+    { p: 'p-wa-zapi', c: 'whatsapp', d: 800, on: ['n-zapi'],
+      t: 'O outbox entrega à Z-API',
+      x: 'Retry com backoff, classificação de erro retentável e limite de envio vivem AQUI — uma vez, não uma vez por aplicação. É o que evita N aplicações competindo pela mesma instância e derrubando o número.' },
+    { p: 'p-zapi-wpp', c: 'whatsapp', d: 600, on: ['n-wpp'],
+      t: 'Chega ao lead',
+      x: 'O status volta pelos webhooks (enviada → entregue → lida) e vira evento SSE pelo mesmo caminho da mensagem interna.' }
+  ]},
+
+  recepcao: { cor: 'entrada', nome: 'Recebimento WhatsApp', passos: [
+    { p: 'p-zapi-wpp', c: 'entrada', d: 600, on: ['n-wpp','n-zapi'], rev: true,
+      t: 'O lead responde',
+      x: 'A Z-API chama o webhook do gateway. Esse caminho não tem token de aplicação — quem chama é um terceiro, então o segredo vive no path da URL.' },
+    { p: 'p-webhook', c: 'entrada', d: 900, on: ['n-entrada'],
+      t: 'Webhook entra no gateway',
+      x: 'Aqui mora o conhecimento de WhatsApp: normalizar E.164, resolver @lid, deduplicar reenvio do webhook, baixar mídia. Nenhuma aplicação precisa saber que isso existe.' },
+    { p: 'p-wa-pg', c: 'entrada', d: 700, on: ['n-pg'],
+      t: 'Persistida e encadeada',
+      x: 'Mensagem de entrada entra na mesma cadeia de hash das de saída — senão a trilha teria buraco justamente do lado que o cliente escreveu.' },
+    { p: 'p-pg-a', c: 'evento', d: 800, on: ['n-inst-a'], par: 'p-pg-b',
+      t: 'NOTIFY para as instâncias',
+      x: 'Idêntico ao fluxo interno. A partir daqui o gateway não distingue mais os dois canais: é só um evento com ID a ser roteado.' },
+    { p: 'p-a-nav', c: 'evento', d: 700, on: ['n-nav1'], par: 'p-b-nav',
+      t: 'A tela do corretor atualiza',
+      x: 'O corretor está conectado na instância A ou na B — tanto faz. Foi isso que o LISTEN/NOTIFY comprou: o hub em memória deixou de ser um teto.' }
+  ]}
+};
+
+async function rodarCena(chave, id) {
+  const cena = CENAS[chave];
+  const n = $('narracao');
+  for (let i = 0; i < cena.passos.length; i++) {
+    if (id !== execucao) return false;
+    const s = cena.passos[i];
+    const cor = CORES[s.c];
+    n.classList.add('ativa');
+    n.style.setProperty('--cor', cor);
+    $('passo-num').textContent = (i + 1);
+    $('passo-titulo').textContent = cena.nome + ' — ' + s.t;
+    $('passo-texto').textContent = s.x;
+
+    const viagens = [pacote(s.p, cor, s.d)];
+    if (s.par) viagens.push(pacote(s.par, cor, s.d));
+    await Promise.all(viagens);
+    if (id !== execucao) return false;
+    acender(s.on, cor);
+    if (!await esperar(reduzir ? 900 : 620, id)) return false;
+  }
+  return true;
+}
+
+async function tocar(qual) {
+  const id = ++execucao;
+  document.querySelectorAll('.barra button[data-c]').forEach(b => b.classList.remove('on'));
+  const mapa = { interno: 'interno', whatsapp: 'whatsapp', recepcao: 'entrada', tudo: 'tudo' };
+  const btn = document.querySelector(`.barra button[data-c="${mapa[qual]}"]`);
+  if (btn) btn.classList.add('on');
+
+  if (qual === 'tudo') {
+    while (id === execucao) {
+      for (const c of ['interno', 'whatsapp', 'recepcao']) {
+        if (!await rodarCena(c, id)) return;
+        if (!await esperar(900, id)) return;
+      }
+    }
+    return;
+  }
+  await rodarCena(qual, id);
+  if (id === execucao) {
+    $('narracao').classList.remove('ativa');
+    $('passo-num').textContent = '✓';
+  }
+}
+
+function parar() {
+  execucao++;
+  document.querySelectorAll('.barra button[data-c]').forEach(b => b.classList.remove('on'));
+  $('narracao').classList.remove('ativa');
+  $('passo-num').textContent = '—';
+  $('passo-titulo').textContent = 'Parado';
+  $('passo-texto').textContent = 'Escolha um cenário para percorrer o caminho de uma mensagem.';
+}
+
+function tema() {
+  const atual = document.documentElement.getAttribute('data-theme');
+  const escuro = atual ? atual === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  document.documentElement.setAttribute('data-theme', escuro ? 'light' : 'dark');
+}
+
+// só arranca sozinho se ninguém tocou em nada ainda -- senão o autoplay
+// atropela o cenário que a pessoa acabou de escolher.
+setTimeout(() => { if (execucao === 0) tocar('interno'); }, 700);
+</script>
+</body>
+</html>

@@ -36,7 +36,12 @@ func NovoRouter(
 	eventos *handler.Eventos,
 	zapiAdmin *handler.ZAPIAdmin,
 	leads *handler.Leads,
+	canais *handler.Canais,
 	tokenServico string,
+	// autenticadorApp e a identidade por aplicacao (barramento, fase 1).
+	// Pode ser nil: nesse caso /api/* cai no token de servico unico, que e
+	// exatamente o comportamento anterior.
+	autenticadorApp *middleware.AutenticadorAplicacao,
 	segredoWebhook string,
 	rateLimitPorMinuto int,
 ) chi.Router {
@@ -91,9 +96,11 @@ func NovoRouter(
 	r.Get("/eventos", eventos.Servir)
 
 	r.Group(func(r chi.Router) {
-		r.Use(middleware.ExigirTokenServico(tokenServico))
+		// aceita o token unico e o token por aplicacao em paralelo (fase 1
+		// do barramento) -- o unico sai na fase 8.
+		r.Use(middleware.ExigirServicoOuAplicacao(tokenServico, autenticadorApp))
 		r.Post("/api/mensagens", mensagens.Criar)
-		r.Post("/api/sessoes-sse", sessoesSSE.Criar)
+		r.Post("/api/sessoes-sse", sessoesSSE.CriarLegado)
 
 		// /disparos criava token de transbordo e resolvia @lid sem nenhuma
 		// autenticacao (P1-14) -- exposto na internet, um estranho gerava
@@ -114,6 +121,31 @@ func NovoRouter(
 		r.Post("/api/leads/reenvio", disparo.Reenviar)
 		r.Post("/api/leads/importar-csv", leads.ImportarCSV)
 	})
+
+	// /v1/* e o barramento (fases 3 e 4). Diferente de /api/*, aqui a
+	// autenticacao e ESTRITA: so token de aplicacao, nunca o
+	// GATEWAY_SERVICE_TOKEN unico. Sem aplicacao identificada nao ha como
+	// escopar canal nem compor a chave do hub, e um escopo adivinhado
+	// atravessaria a fronteira entre consumidores -- que e a unica coisa
+	// que este prefixo existe para garantir.
+	//
+	// autenticadorApp nil (sem banco na subida) deixa /v1/* fora do ar em
+	// vez de aberto.
+	if autenticadorApp != nil {
+		r.Group(func(r chi.Router) {
+			r.Use(autenticadorApp.Middleware)
+
+			r.Post("/v1/sessoes", sessoesSSE.Criar)
+
+			// canal e lista de entrega (fase 4) -- todas idempotentes, para
+			// a aplicacao reconciliar o estado dela sem saber o que ja
+			// mandou antes.
+			r.Put("/v1/canais/{canal_externo}", canais.PutCanal)
+			r.Put("/v1/canais/{canal_externo}/assinantes/{destino}", canais.PutAssinante)
+			r.Delete("/v1/canais/{canal_externo}/assinantes/{destino}", canais.DeleteAssinante)
+			r.Get("/v1/canais/{canal_externo}/assinantes", canais.GetAssinantes)
+		})
+	}
 
 	return r
 }

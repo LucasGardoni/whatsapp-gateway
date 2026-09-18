@@ -20,11 +20,14 @@ type Eventos struct {
 	// origemCRM e a origem exata autorizada a abrir o stream (P0-03).
 	// Vazio nao emite o header -- consumo por curl/servidor nao precisa.
 	origemCRM string
-	tokens    *sse.TokenStore
+	// assinador valida o token de sessao (barramento, fase 3). Nil quando
+	// SSE_SIGNING_KEY nao esta configurada -- e ai nenhuma conexao abre,
+	// em vez de abrir sem autenticacao (fail closed, padrao da base).
+	assinador *sse.AssinadorSessao
 }
 
-func NovoEventos(hub *sse.Hub, tokens *sse.TokenStore, origemCRM string) *Eventos {
-	return &Eventos{hub: hub, tokens: tokens, origemCRM: origemCRM}
+func NovoEventos(hub *sse.Hub, assinador *sse.AssinadorSessao, origemCRM string) *Eventos {
+	return &Eventos{hub: hub, assinador: assinador, origemCRM: origemCRM}
 }
 
 func (h *Eventos) Servir(w http.ResponseWriter, r *http.Request) {
@@ -38,8 +41,17 @@ func (h *Eventos) Servir(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Vary", "Origin")
 	}
 
-	corretorID, ok := h.tokens.Validar(r.URL.Query().Get("token"))
-	if !ok {
+	if h.assinador == nil {
+		http.Error(w, "tempo real nao configurado", http.StatusServiceUnavailable)
+		return
+	}
+
+	// A chave do hub sai do TOKEN, nunca da query string ou de um header.
+	// Se o destino pudesse vir por fora, qualquer um leria o stream de
+	// qualquer destino -- a assinatura e o que torna valida aqui dentro a
+	// permissao decidida pela aplicacao (secao 1 do plano).
+	sessao, err := h.assinador.Validar(r.URL.Query().Get("token"))
+	if err != nil {
 		http.Error(w, "token invalido ou expirado", http.StatusUnauthorized)
 		return
 	}
@@ -50,7 +62,7 @@ func (h *Eventos) Servir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ch, cancelar := h.hub.Assinar(corretorID)
+	ch, cancelar := h.hub.Assinar(sessao.Chave())
 	defer cancelar()
 
 	w.Header().Set("Content-Type", "text/event-stream")

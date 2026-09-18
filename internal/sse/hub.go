@@ -1,17 +1,23 @@
-// package sse distribui eventos de mensagem para o CRM via Server-Sent
-// Events (fase 7). Um so processo, um so hub -- nao precisa de pub/sub
-// distribuido (secao 1 do plano: instancia unica).
+// package sse distribui eventos para as aplicacoes via Server-Sent Events.
 //
-// Mensagem interna (fase 10) nao passa por aqui do lado da escrita -- e
-// gravada direto pelo CRM em mensagem_interna, sem tocar o gateway (secao
-// 6 do plano: chat interno so compartilha o SSE, nao a tabela). O lado da
-// leitura e o internal/chatinterno.Poller: ele faz polling da tabela e usa
-// PublicarTodos abaixo pra entregar no mesmo hub -- quem esta em qual
-// canal/DM e permissao de supervisor (secao 6, pendencia em aberto) e
-// decisao do CRM, o gateway so retransmite pra todo mundo conectado.
+// A chave de assinatura e "aplicacao:destino" (barramento, fase 3), e o
+// destino e uma string OPACA cujo dono e a aplicacao -- o gateway nao
+// resolve destino para pessoa, nao faz join com `usuario` e nao sabe se
+// aquilo e gente, setor, robo ou fila (secao 1 do plano do barramento).
+// Quem decide que alguem pode ler um destino e a aplicacao, no momento em
+// que pede o token de sessao; o hub so honra o que o token diz.
+//
+// Antes da fase 3 a chave era o corretorID e existia um PublicarTodos que
+// entregava toda mensagem interna a toda sessao conectada. Isso so era
+// tolerável com um unico consumidor de cinco pessoas -- com N aplicacoes
+// e vazamento entre empresas do mesmo prédio. Ver PublicarNaAplicacao
+// abaixo para o que sobrou dele, e por quê.
 package sse
 
-import "sync"
+import (
+	"strings"
+	"sync"
+)
 
 // Evento e o payload entregue ao browser via EventSource. Tipo distingue
 // mensagem nova (entrada ou saida) de mudanca de status de uma mensagem
@@ -41,80 +47,93 @@ const (
 const tamanhoBufferAssinante = 16
 
 type Hub struct {
-	mu         sync.Mutex
-	assinantes map[int64]map[chan Evento]struct{}
+	mu sync.Mutex
+	// chave = "aplicacao:destino" (ver ChaveDestino).
+	assinantes map[string]map[chan Evento]struct{}
 }
 
 func NovoHub() *Hub {
-	return &Hub{assinantes: make(map[int64]map[chan Evento]struct{})}
+	return &Hub{assinantes: make(map[string]map[chan Evento]struct{})}
 }
 
-// Assinar registra um canal de eventos para o corretor. cancelar deve ser
-// chamado quando a conexao SSE terminar (defer no handler), para nao
-// vazar o canal nem a entrada no mapa.
-func (h *Hub) Assinar(corretorID int64) (ch <-chan Evento, cancelar func()) {
+// Assinar registra um canal de eventos para a chave "aplicacao:destino".
+// cancelar deve ser chamado quando a conexao SSE terminar (defer no
+// handler), para nao vazar o canal nem a entrada no mapa.
+func (h *Hub) Assinar(chave string) (ch <-chan Evento, cancelar func()) {
 	canal := make(chan Evento, tamanhoBufferAssinante)
 
 	h.mu.Lock()
-	if h.assinantes[corretorID] == nil {
-		h.assinantes[corretorID] = make(map[chan Evento]struct{})
+	if h.assinantes[chave] == nil {
+		h.assinantes[chave] = make(map[chan Evento]struct{})
 	}
-	h.assinantes[corretorID][canal] = struct{}{}
+	h.assinantes[chave][canal] = struct{}{}
 	h.mu.Unlock()
 
 	cancelar = func() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		if _, existe := h.assinantes[corretorID][canal]; !existe {
+		if _, existe := h.assinantes[chave][canal]; !existe {
 			return
 		}
-		delete(h.assinantes[corretorID], canal)
-		if len(h.assinantes[corretorID]) == 0 {
-			delete(h.assinantes, corretorID)
+		delete(h.assinantes[chave], canal)
+		if len(h.assinantes[chave]) == 0 {
+			delete(h.assinantes, chave)
 		}
 		close(canal)
 	}
 	return canal, cancelar
 }
 
-// Publicar entrega o evento a quem estiver assinando este corretor.
+// Publicar entrega o evento a quem estiver assinando cada uma das chaves.
 //
-// corretorID nulo significa conversa ainda na fila de espera, sem dono.
-// Antes isso nao publicava nada e o evento era simplesmente perdido: um
-// lead novo chegava e a tela de Fila so mostrava depois que o corretor
-// desse F5 -- justamente a tela onde a demora custa atendimento.
-//
-// Agora vira um EventoFilaAtualizada para todo mundo conectado. O tipo e
-// outro de proposito: retransmitir mensagem_nova para todos faria a tela
-// de conversa de cada corretor reagir a uma mensagem que nao e dele. Os
-// campos originais sao descartados junto -- quem esta na Fila so precisa
-// saber que a lista mudou, e a lista ja e filtrada por permissao no CRM.
-func (h *Hub) Publicar(corretorID *int64, evento Evento) {
-	if corretorID == nil {
-		h.PublicarTodos(Evento{Tipo: EventoFilaAtualizada})
-		return
-	}
-
+// Lista vazia nao entrega nada, e isso e o comportamento correto: se um
+// evento nao tem destinatario listado, ele nao sai. O broadcast que
+// existia antes era o contrario disso -- entregava a todos quando nao
+// sabia a quem entregar.
+func (h *Hub) Publicar(chaves []string, evento Evento) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for canal := range h.assinantes[*corretorID] {
-		select {
-		case canal <- evento:
-		default:
-			// assinante lento -- descarta em vez de travar o publicador.
-			// o EventSource reconecta e a tela busca o estado atual de novo.
+	for _, chave := range chaves {
+		for canal := range h.assinantes[chave] {
+			select {
+			case canal <- evento:
+			default:
+				// assinante lento -- descarta em vez de travar o publicador.
+				// o EventSource reconecta e a tela busca o estado atual de novo.
+			}
 		}
 	}
 }
 
-// PublicarTodos entrega o evento a todo mundo conectado, independente do
-// corretor -- usado pelo chat interno (fase 10), onde saber quem pertence
-// a qual canal/DM e permissao de supervisor e decisao do CRM (secao 6),
-// nao do gateway. O browser filtra o que e relevante pra tela aberta.
-func (h *Hub) PublicarTodos(evento Evento) {
+// PublicarNaAplicacao entrega a todos os destinos de UMA aplicacao.
+//
+// E o que sobrou do PublicarTodos, e existe por duas entregas que ainda
+// nao tem lista de destinos:
+//
+//  1. EventoFilaAtualizada -- conversa sem corretor atribuido nao tem a
+//     quem endereçar, por definicao: o evento avisa que a fila mudou, e a
+//     propria lista ja e filtrada por permissao do lado da aplicacao.
+//  2. chat interno, enquanto o Poller for a fonte -- a lista de quem le
+//     cada canal so passa a existir em `canal_assinante`, na fase 4.
+//
+// A diferenca para o PublicarTodos antigo e a fronteira: um evento do crm
+// nao alcanca nenhum assinante do portal. O vazamento que a fase 3 fecha
+// e o vazamento ENTRE APLICACOES, e esse esta fechado. O que resta e um
+// broadcast dentro de uma aplicacao que ja recebia tudo.
+//
+// Some quando as duas entregas acima ganharem lista de destinos (fases 4
+// e 5). Enquanto existir, e o unico ponto do hub que entrega sem destino
+// explicito -- de propósito concentrado aqui, para ser um `git grep` e
+// nao uma caça.
+func (h *Hub) PublicarNaAplicacao(app string, evento Evento) {
+	prefixo := app + ":"
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for _, canais := range h.assinantes {
+	for chave, canais := range h.assinantes {
+		if !strings.HasPrefix(chave, prefixo) {
+			continue
+		}
 		for canal := range canais {
 			select {
 			case canal <- evento:

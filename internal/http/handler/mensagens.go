@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/LucasGardoni/whatsapp-gateway/internal/auditoria"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/http/middleware"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/sse"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
@@ -141,11 +142,22 @@ func (h *Mensagens) Criar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// procedencia (barramento, fase 1): sai do token autenticado, nunca do
+	// corpo. Nulo quando a chamada veio pelo token legado, que nao
+	// identifica aplicacao -- some na fase 8, junto com o token legado.
+	var aplicacaoID *int64
+	var origem string
+	if app, ok := middleware.AplicacaoDoContexto(ctx); ok {
+		aplicacaoID = &app.ID
+		origem = app.Codigo
+	}
+
 	mensagem, err := queries.CriarMensagemSaida(ctx, store.CriarMensagemSaidaParams{
 		ConversaID:   req.ConversaID,
 		Tipo:         req.Tipo,
 		Texto:        naoVazio(req.Texto),
 		MidiaCaminho: naoVazio(req.MidiaCaminho),
+		AplicacaoID:  aplicacaoID,
 	})
 	if err != nil {
 		slog.Error("mensagens: criar mensagem de saida", "conversa_id", req.ConversaID, "erro", err)
@@ -156,8 +168,19 @@ func (h *Mensagens) Criar(w http.ResponseWriter, r *http.Request) {
 	// o hash cobre tipo e caminho reais, nao "texto"/"" fixos: senao duas
 	// mensagens com a mesma legenda e arquivos diferentes teriam o mesmo
 	// elo, e a cadeia deixaria de provar o que foi de fato enviado.
+	//
+	// Origem entra na cadeia a partir da fase 2 do barramento: a trilha
+	// passa a provar quem originou, nao so o que foi dito.
 	if err := auditoria.RegistrarHash(ctx, queries, mensagem.ID,
-		auditoria.CamposMensagem(mensagem.ID, mensagem.ConversaID, "saida", req.Tipo, req.Texto, req.MidiaCaminho, "")...,
+		auditoria.CamposMensagem(auditoria.Mensagem{
+			ID:           mensagem.ID,
+			ConversaID:   mensagem.ConversaID,
+			Direcao:      "saida",
+			Tipo:         req.Tipo,
+			Texto:        req.Texto,
+			MidiaCaminho: req.MidiaCaminho,
+			Origem:       origem,
+		})...,
 	); err != nil {
 		slog.Error("mensagens: registrar hash de auditoria", "mensagem_id", mensagem.ID, "erro", err)
 		http.Error(w, "erro interno", http.StatusInternalServerError)
@@ -174,7 +197,7 @@ func (h *Mensagens) Criar(w http.ResponseWriter, r *http.Request) {
 	// corretor nao pode ser notificado de uma mensagem que a transacao
 	// acabou descartando.
 	if h.Hub != nil {
-		h.Hub.Publicar(conversa.CorretorID, sse.Evento{
+		h.Hub.PublicarParaCorretorCRM(conversa.CorretorID, sse.Evento{
 			Tipo:       sse.EventoMensagemNova,
 			MensagemID: mensagem.ID,
 			ConversaID: mensagem.ConversaID,

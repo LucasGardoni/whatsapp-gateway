@@ -7,6 +7,8 @@ package store
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const buscarUltimoIDMensagemInterna = `-- name: BuscarUltimoIDMensagemInterna :one
@@ -29,17 +31,25 @@ WHERE id > $1
 ORDER BY id
 `
 
+type ListarMensagensInternasAPartirDeRow struct {
+	ID        int64            `json:"id"`
+	CanalID   int64            `json:"canal_id"`
+	UsuarioID int64            `json:"usuario_id"`
+	Texto     string           `json:"texto"`
+	CriadoEm  pgtype.Timestamp `json:"criado_em"`
+}
+
 // mensagem_interna e escrita direto pelo crm, sem passar pelo gateway
 // (secao 6) -- o poller so enxerga linha nova comparando id.
-func (q *Queries) ListarMensagensInternasAPartirDe(ctx context.Context, id int64) ([]MensagemInterna, error) {
+func (q *Queries) ListarMensagensInternasAPartirDe(ctx context.Context, id int64) ([]ListarMensagensInternasAPartirDeRow, error) {
 	rows, err := q.db.Query(ctx, listarMensagensInternasAPartirDe, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []MensagemInterna
+	var items []ListarMensagensInternasAPartirDeRow
 	for rows.Next() {
-		var i MensagemInterna
+		var i ListarMensagensInternasAPartirDeRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.CanalID,

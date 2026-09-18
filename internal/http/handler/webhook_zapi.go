@@ -33,6 +33,12 @@ const tamanhoMaximoPayload = 5 << 20 // 5MB
 // recebida (matcher + download de midia + escrita no banco).
 const timeoutProcessamento = 30 * time.Second
 
+// origemProvedorZAPI e a procedencia das mensagens de ENTRADA (barramento,
+// fase 2). Casa com mensagem.provedor, que ja grava 'zapi' na mesma linha
+// -- a cadeia e a coluna dizem a mesma coisa, entao divergencia entre elas
+// e sinal de adulteracao.
+const origemProvedorZAPI = "zapi"
+
 type WebhookZAPI struct {
 	pool     *pgxpool.Pool
 	baixador *midia.Baixador
@@ -201,8 +207,22 @@ func (h *WebhookZAPI) processarMensagemRecebida(payloadBrutoID int64, corpo []by
 	// auditoria encadeada por hash (secao 2, defesa no 4, fase 12) -- dentro
 	// da mesma transacao da mensagem, senao o commit da mensagem e o avanco
 	// do cursor da cadeia poderiam divergir num crash entre os dois.
+	//
+	// Origem entra a partir da fase 2 do barramento. Numa mensagem de
+	// ENTRADA nao existe aplicacao que a originou -- quem a trouxe foi o
+	// provedor, entao e o provedor que assina. Usar aqui o codigo de uma
+	// aplicacao seria inventar uma procedencia que ninguem afirmou.
 	if err := auditoria.RegistrarHash(ctx, queries, mensagemID,
-		auditoria.CamposMensagem(mensagemID, conversa.ID, "entrada", tipo, texto, midiaCaminho, payload.MessageID)...,
+		auditoria.CamposMensagem(auditoria.Mensagem{
+			ID:            mensagemID,
+			ConversaID:    conversa.ID,
+			Direcao:       "entrada",
+			Tipo:          tipo,
+			Texto:         texto,
+			MidiaCaminho:  midiaCaminho,
+			ProvedorMsgID: payload.MessageID,
+			Origem:        origemProvedorZAPI,
+		})...,
 	); err != nil {
 		slog.Error("webhook zapi: registrar hash de auditoria", "mensagem_id", mensagemID, "erro", err)
 		return
@@ -216,7 +236,7 @@ func (h *WebhookZAPI) processarMensagemRecebida(payloadBrutoID int64, corpo []by
 	// publica so depois do commit -- um corretor nao pode ser notificado
 	// de uma mensagem que a transacao acabou descartando.
 	if h.Hub != nil {
-		h.Hub.Publicar(conversa.CorretorID, sse.Evento{
+		h.Hub.PublicarParaCorretorCRM(conversa.CorretorID, sse.Evento{
 			Tipo:       sse.EventoMensagemNova,
 			MensagemID: mensagemID,
 			ConversaID: conversa.ID,
@@ -280,7 +300,7 @@ func (h *WebhookZAPI) OnMessageStatus(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		for _, m := range atualizadas {
-			h.Hub.Publicar(m.CorretorID, sse.Evento{
+			h.Hub.PublicarParaCorretorCRM(m.CorretorID, sse.Evento{
 				Tipo:       sse.EventoMensagemStatus,
 				MensagemID: m.ID,
 				ConversaID: m.ConversaID,
@@ -372,7 +392,7 @@ func (h *WebhookZAPI) OnMessageSend(w http.ResponseWriter, r *http.Request) {
 			h.registrarAlertaDeEnvio(ctx, log, payload, m.ID)
 
 			if h.Hub != nil {
-				h.Hub.Publicar(m.CorretorID, sse.Evento{
+				h.Hub.PublicarParaCorretorCRM(m.CorretorID, sse.Evento{
 					Tipo:       sse.EventoMensagemStatus,
 					MensagemID: m.ID,
 					ConversaID: m.ConversaID,

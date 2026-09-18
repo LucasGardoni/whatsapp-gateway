@@ -283,7 +283,7 @@ func (w *Worker) publicar(m store.SelecionarPendentesParaEnvioRow, status string
 	if w.Hub == nil {
 		return
 	}
-	w.Hub.Publicar(m.CorretorID, sse.Evento{
+	w.Hub.PublicarParaCorretorCRM(m.CorretorID, sse.Evento{
 		Tipo:       sse.EventoMensagemStatus,
 		MensagemID: m.ID,
 		ConversaID: m.ConversaID,

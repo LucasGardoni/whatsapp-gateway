@@ -62,7 +62,26 @@ type Config struct {
 	// RateLimitPorMinuto protege os endpoints publicos (sem token de
 	// servico) contra abuso (fase 12). <= 0 desliga o limite.
 	RateLimitPorMinuto int
+
+	// SSESigningKey assina os tokens de sessao do EventSource (barramento,
+	// fase 3). Substitui o TokenStore em memoria, que prendia o gateway a
+	// uma instancia: qualquer instancia que compartilhe esta chave valida
+	// o token que outra emitiu.
+	//
+	// Vazia fecha o tempo real inteiro -- POST /v1/sessoes,
+	// POST /api/sessoes-sse e GET /eventos respondem 503 (fail closed,
+	// mesmo padrao de GatewayServiceToken e WebhookPathSecret). Assinar
+	// com segredo vazio deixaria qualquer um forjar token para qualquer
+	// destino, que e pior que nao ter tempo real.
+	//
+	// Todas as instancias atras do mesmo proxy precisam do MESMO valor,
+	// senao o token emitido por uma nao abre conexao na outra.
+	SSESigningKey string
 }
+
+// tamanhoMinimoChaveSSE em bytes -- 32 caracteres cobrem com folga os 256
+// bits que o HMAC-SHA256 usa como chave.
+const tamanhoMinimoChaveSSE = 32
 
 func Load() (*Config, error) {
 	cfg := &Config{
@@ -91,6 +110,8 @@ func Load() (*Config, error) {
 		DLPSomenteAvisar:      os.Getenv("DLP_SOMENTE_AVISAR") == "true",
 
 		RateLimitPorMinuto: getInt("RATE_LIMIT_POR_MINUTO", 60),
+
+		SSESigningKey: os.Getenv("SSE_SIGNING_KEY"),
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -114,6 +135,13 @@ func Load() (*Config, error) {
 	// configuracao. Melhor falhar aqui.
 	if s := cfg.WebhookPathSecret; s != "" && s != url.PathEscape(s) {
 		return nil, fmt.Errorf("carregar config: WEBHOOK_PATH_SECRET tem caractere que precisa de escape em URL; use apenas [A-Za-z0-9._~-]")
+	}
+
+	// uma chave curta nao falha em nada visivel: os tokens continuam sendo
+	// emitidos e validados normalmente, so que forjaveis por forca bruta.
+	// O sintoma seria ausencia de sintoma, entao a recusa e aqui.
+	if s := cfg.SSESigningKey; s != "" && len(s) < tamanhoMinimoChaveSSE {
+		return nil, fmt.Errorf("carregar config: SSE_SIGNING_KEY tem %d caracteres; use pelo menos %d (ex.: openssl rand -base64 32)", len(s), tamanhoMinimoChaveSSE)
 	}
 
 	return cfg, nil
