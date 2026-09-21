@@ -60,7 +60,10 @@ ORDER BY ca.destino_externo;
 -- prefixar. A composicao tem que casar exatamente com sse.ChaveDestino --
 -- se divergir, o evento e publicado numa chave que ninguem assina e a
 -- entrega some em silencio.
-SELECT a.codigo || ':' || ca.destino_externo AS chave
+-- O ::text nao e decorativo: sem ele o sqlc nao sabe o tipo da
+-- concatenacao e gera []interface{}, que so estoura na primeira vez que
+-- alguem tenta usar a lista de verdade (foi o que aconteceu na fase 5).
+SELECT (a.codigo || ':' || ca.destino_externo)::text AS chave
 FROM canal_assinante ca
 JOIN canal c     ON c.id = ca.canal_id
 JOIN aplicacao a ON a.id = c.aplicacao_id

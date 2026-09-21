@@ -95,6 +95,8 @@ func run() error {
 	transbordo := handler.NovoTransbordo(pool)
 	mensagens := handler.NovoMensagens(pool, cfg.MidiaDir)
 	mensagens.Hub = hub
+	mensagensV1 := handler.NovoMensagensV1(pool)
+	mensagensV1.Hub = hub
 	sessoesSSE := handler.NovoSessoesSSE(assinadorSSE)
 	eventos := handler.NovoEventos(hub, assinadorSSE, cfg.CORSOrigemCRM)
 	zapiAdmin := handler.NovoZAPIAdmin(zapiCliente)
@@ -128,7 +130,7 @@ func run() error {
 		}
 	}
 
-	router := httpserver.NovoRouter(webhookZAPI, disparo, transbordo, mensagens, sessoesSSE, eventos, zapiAdmin, leads, canais, cfg.GatewayServiceToken, autenticadorApp, cfg.WebhookPathSecret, cfg.RateLimitPorMinuto)
+	router := httpserver.NovoRouter(webhookZAPI, disparo, transbordo, mensagens, mensagensV1, sessoesSSE, eventos, zapiAdmin, leads, canais, cfg.GatewayServiceToken, autenticadorApp, cfg.WebhookPathSecret, cfg.RateLimitPorMinuto)
 
 	// Sem timeout nenhum, uma conexao aberta e ociosa segura um goroutine e
 	// um descritor para sempre -- e o gateway fica exposto na internet

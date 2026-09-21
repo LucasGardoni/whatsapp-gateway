@@ -184,6 +184,15 @@ func (h *Canais) GetAssinantes(w http.ResponseWriter, r *http.Request) {
 // ponto de entrada do escopo: nenhum handler daqui monta a consulta sem
 // passar por ele.
 func (h *Canais) escopo(w http.ResponseWriter, r *http.Request) (middleware.Aplicacao, string, bool) {
+	return escopoCanal(w, r)
+}
+
+// escopoCanal e o escopo de toda rota sob /v1/canais/{canal_externo},
+// inclusive as que nao vivem neste arquivo (o historico da fase 5).
+// Compartilhado de proposito: duas leituras diferentes do mesmo par
+// (aplicacao, canal) e como uma fronteira entre consumidores vaza pelo
+// lado que ficou para tras.
+func escopoCanal(w http.ResponseWriter, r *http.Request) (middleware.Aplicacao, string, bool) {
 	app, autenticada := middleware.AplicacaoDoContexto(r.Context())
 	if !autenticada {
 		// defesa em profundidade: a rota ja esta atras do middleware de

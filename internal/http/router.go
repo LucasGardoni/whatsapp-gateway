@@ -32,6 +32,7 @@ func NovoRouter(
 	disparo *handler.Disparo,
 	transbordo *handler.Transbordo,
 	mensagens *handler.Mensagens,
+	mensagensV1 *handler.MensagensV1,
 	sessoesSSE *handler.SessoesSSE,
 	eventos *handler.Eventos,
 	zapiAdmin *handler.ZAPIAdmin,
@@ -137,6 +138,11 @@ func NovoRouter(
 
 			r.Post("/v1/sessoes", sessoesSSE.Criar)
 
+			// entrada do barramento (fase 5). Hoje so canal=interno; o
+			// canal=whatsapp entra na fase 6, no mesmo endpoint, para a
+			// aplicacao nao ter de trocar de rota depois.
+			r.Post("/v1/mensagens", mensagensV1.Criar)
+
 			// canal e lista de entrega (fase 4) -- todas idempotentes, para
 			// a aplicacao reconciliar o estado dela sem saber o que ja
 			// mandou antes.
@@ -144,6 +150,10 @@ func NovoRouter(
 			r.Put("/v1/canais/{canal_externo}/assinantes/{destino}", canais.PutAssinante)
 			r.Delete("/v1/canais/{canal_externo}/assinantes/{destino}", canais.DeleteAssinante)
 			r.Get("/v1/canais/{canal_externo}/assinantes", canais.GetAssinantes)
+
+			// historico do canal (secao 6.3) -- devolve o ciphertext; quem
+			// decide quem pode ler e a aplicacao, antes de chamar.
+			r.Get("/v1/canais/{canal_externo}/mensagens", mensagensV1.Historico)
 		})
 	}
 

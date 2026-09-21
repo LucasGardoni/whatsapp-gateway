@@ -21,14 +21,25 @@ import (
 
 // Evento e o payload entregue ao browser via EventSource. Tipo distingue
 // mensagem nova (entrada ou saida) de mudanca de status de uma mensagem
-// ja existente, ou mensagem interna nova (fase 10). CanalID so e
-// preenchido em EventoMensagemInternaNova.
+// ja existente, ou mensagem interna nova (fase 10).
+//
+// O evento NUNCA carrega conteudo, nem cifrado (decisao fechada 5 do
+// plano do barramento). Ele avisa que algo mudou; a aplicacao busca o
+// conteudo e decifra. E isso que torna o LISTEN/NOTIFY viavel na fase 7,
+// onde o payload tem teto de 8KB.
 type Evento struct {
 	Tipo       string `json:"tipo"` // mensagem_nova | mensagem_status | mensagem_interna_nova
 	MensagemID int64  `json:"mensagem_id"`
 	ConversaID int64  `json:"conversa_id,omitempty"`
 	Status     string `json:"status,omitempty"`
-	CanalID    int64  `json:"canal_id,omitempty"`
+	// CanalID e o id de canal_interno, do caminho legado -- so aparece no
+	// evento publicado pelo Poller do chat interno. Some na fase 8.
+	CanalID int64 `json:"canal_id,omitempty"`
+	// CanalExterno e o canal OPACO do barramento (secao 6.5), preenchido
+	// no que o gateway mesmo escreve. E o nome que a aplicacao usou, e nao
+	// o id interno: a aplicacao nao conhece, e nao deve precisar conhecer,
+	// a chave primaria de `canal` aqui dentro.
+	CanalExterno string `json:"canal_externo,omitempty"`
 }
 
 const (

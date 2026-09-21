@@ -49,9 +49,32 @@ func encadear(hashAnterior string, campos []string) string {
 // campos deve incluir o id da mensagem (unico e imutavel) pra garantir que
 // duas mensagens com conteudo identico nao colidam no mesmo hash.
 func RegistrarHash(ctx context.Context, repo Repositorio, mensagemID int64, campos ...string) error {
-	anteriorPtr, err := repo.TravarUltimoHashAuditoria(ctx, ChaveUltimoHash)
+	return registrarElo(ctx, repo, ChaveUltimoHash, campos, func(anterior *string, novo string) error {
+		return repo.AtualizarHashMensagem(ctx, store.AtualizarHashMensagemParams{
+			ID:           mensagemID,
+			HashAnterior: anterior,
+			Hash:         &novo,
+		})
+	})
+}
+
+// cursor e o que as duas cadeias tem em comum: a linha de `parametro` que
+// guarda a ponta.
+type cursor interface {
+	TravarUltimoHashAuditoria(ctx context.Context, chave string) (*string, error)
+	DefinirParametro(ctx context.Context, arg store.DefinirParametroParams) error
+}
+
+// registrarElo e o passo compartilhado: travar a ponta, encadear e
+// avancar. So `gravar` difere entre as cadeias -- e qual tabela recebe o
+// elo. Ficou fatorado aqui porque duplicar este corpo significaria duas
+// implementacoes do MESMO encadeamento, e um dia elas divergiriam em
+// algum detalhe -- o tipo de divergencia que nao quebra teste e so
+// aparece quando alguem tenta verificar a cadeia de verdade.
+func registrarElo(ctx context.Context, repo cursor, chave string, campos []string, gravar func(anterior *string, novo string) error) error {
+	anteriorPtr, err := repo.TravarUltimoHashAuditoria(ctx, chave)
 	if err != nil {
-		return fmt.Errorf("auditoria: travar ultimo hash: %w", err)
+		return fmt.Errorf("auditoria: travar ultimo hash de %s: %w", chave, err)
 	}
 	var anterior string
 	if anteriorPtr != nil {
@@ -60,19 +83,15 @@ func RegistrarHash(ctx context.Context, repo Repositorio, mensagemID int64, camp
 
 	novo := encadear(anterior, campos)
 
-	if err := repo.AtualizarHashMensagem(ctx, store.AtualizarHashMensagemParams{
-		ID:           mensagemID,
-		HashAnterior: naoVazio(anterior),
-		Hash:         &novo,
-	}); err != nil {
-		return fmt.Errorf("auditoria: atualizar hash da mensagem %d: %w", mensagemID, err)
+	if err := gravar(naoVazio(anterior), novo); err != nil {
+		return fmt.Errorf("auditoria: gravar elo da cadeia %s: %w", chave, err)
 	}
 
 	if err := repo.DefinirParametro(ctx, store.DefinirParametroParams{
-		Chave: ChaveUltimoHash,
+		Chave: chave,
 		Valor: &novo,
 	}); err != nil {
-		return fmt.Errorf("auditoria: avancar cursor da cadeia: %w", err)
+		return fmt.Errorf("auditoria: avancar cursor da cadeia %s: %w", chave, err)
 	}
 	return nil
 }

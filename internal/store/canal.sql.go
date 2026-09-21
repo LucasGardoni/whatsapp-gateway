@@ -75,7 +75,7 @@ func (q *Queries) ListarAssinantes(ctx context.Context, arg ListarAssinantesPara
 }
 
 const listarChavesDeEntregaDoCanal = `-- name: ListarChavesDeEntregaDoCanal :many
-SELECT a.codigo || ':' || ca.destino_externo AS chave
+SELECT (a.codigo || ':' || ca.destino_externo)::text AS chave
 FROM canal_assinante ca
 JOIN canal c     ON c.id = ca.canal_id
 JOIN aplicacao a ON a.id = c.aplicacao_id
@@ -89,15 +89,18 @@ WHERE ca.canal_id = $1
 // prefixar. A composicao tem que casar exatamente com sse.ChaveDestino --
 // se divergir, o evento e publicado numa chave que ninguem assina e a
 // entrega some em silencio.
-func (q *Queries) ListarChavesDeEntregaDoCanal(ctx context.Context, canalID int64) ([]interface{}, error) {
+// O ::text nao e decorativo: sem ele o sqlc nao sabe o tipo da
+// concatenacao e gera []interface{}, que so estoura na primeira vez que
+// alguem tenta usar a lista de verdade (foi o que aconteceu na fase 5).
+func (q *Queries) ListarChavesDeEntregaDoCanal(ctx context.Context, canalID int64) ([]string, error) {
 	rows, err := q.db.Query(ctx, listarChavesDeEntregaDoCanal, canalID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []interface{}
+	var items []string
 	for rows.Next() {
-		var chave interface{}
+		var chave string
 		if err := rows.Scan(&chave); err != nil {
 			return nil, err
 		}

@@ -81,10 +81,21 @@ func (p *Poller) verificar(ctx context.Context) {
 	}
 
 	for _, m := range mensagens {
+		// canal_id virou nulavel na fase 5 do barramento, mas a query so
+		// traz linha do caminho legado (canal_ref_id IS NULL) e a CHECK
+		// mensagem_interna_um_canal_apenas garante que essa linha tem
+		// canal_id. Nulo aqui seria linha impossivel -- avanca o cursor
+		// mesmo assim, senao o poller reprocessaria a mesma linha para
+		// sempre, escondendo o problema atras de um log por tick.
+		if m.CanalID == nil {
+			slog.Error("chatinterno: mensagem legada sem canal", "mensagem_id", m.ID)
+			p.ultimoID = m.ID
+			continue
+		}
 		p.hub.PublicarNaAplicacao(sse.AplicacaoCRM, sse.Evento{
 			Tipo:       sse.EventoMensagemInternaNova,
 			MensagemID: m.ID,
-			CanalID:    m.CanalID,
+			CanalID:    *m.CanalID,
 		})
 		p.ultimoID = m.ID
 	}
