@@ -22,7 +22,7 @@ if (-not (Test-Path $Arquivo)) {
 }
 
 # comentarios e linhas vazias fora; o primeiro '=' separa (valores podem
-# conter '=', como base64 com padding -- o GATEWAY_SERVICE_TOKEN e um caso).
+# conter '=', como base64 com padding -- SSE_SIGNING_KEY e um caso).
 $carregadas = 0
 foreach ($linha in Get-Content $Arquivo) {
     $t = $linha.Trim()

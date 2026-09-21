@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/LucasGardoni/whatsapp-gateway/internal/dlp"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/eventos"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/sse"
@@ -30,6 +31,9 @@ type Fila interface {
 	MarcarMensagemBloqueada(ctx context.Context, id int64) error
 	RegistrarOcorrenciaDLP(ctx context.Context, arg store.RegistrarOcorrenciaDLPParams) error
 	ResetarMensagensPresasEmEnvio(ctx context.Context) error
+	// o evento de tempo real e uma linha em `evento` como qualquer outra
+	// escrita (fase 7) -- ver internal/eventos.
+	eventos.Registrador
 }
 
 // Config parametriza o worker. Sao decisoes de operacao, nao de negocio --
@@ -70,9 +74,6 @@ type Worker struct {
 	provedor provedor.Provedor
 	dlp      *dlp.Motor
 	cfg      Config
-	// Hub e opcional -- se nil, o worker processa normalmente mas ninguem
-	// e notificado em tempo real (fase 7).
-	Hub *sse.Hub
 }
 
 func NovoWorker(fila Fila, p provedor.Provedor, motor *dlp.Motor, cfg Config) *Worker {
@@ -180,7 +181,7 @@ func (w *Worker) processarMensagem(ctx context.Context, m store.SelecionarPenden
 		slog.Error("outbox: falha ao marcar mensagem como enviada", "mensagem_id", m.ID, "erro", err)
 		return
 	}
-	w.publicar(m, "enviada")
+	w.publicar(ctx, m, "enviada")
 }
 
 // enviar despacha para o endpoint certo conforme o tipo da mensagem.
@@ -253,7 +254,7 @@ func (w *Worker) marcarFalhaDefinitiva(ctx context.Context, m store.SelecionarPe
 		slog.Error("outbox: falha ao marcar falha definitiva", "mensagem_id", m.ID, "erro", err)
 		return
 	}
-	w.publicar(m, "falha")
+	w.publicar(ctx, m, "falha")
 }
 
 // motivoErro limita o tamanho gravado em mensagem.ultimo_erro -- o texto
@@ -273,22 +274,25 @@ func (w *Worker) marcarBloqueada(ctx context.Context, m store.SelecionarPendente
 		slog.Error("outbox: falha ao marcar mensagem bloqueada", "mensagem_id", m.ID, "erro", err)
 		return
 	}
-	w.publicar(m, "bloqueada")
+	w.publicar(ctx, m, "bloqueada")
 }
 
-// publicar notifica o corretor da conversa via sse -- ver campo Hub.
-// Retentativa (status continua 'pendente') nao publica: nao muda nada
-// que a tela precise refletir ainda.
-func (w *Worker) publicar(m store.SelecionarPendentesParaEnvioRow, status string) {
-	if w.Hub == nil {
-		return
-	}
-	w.Hub.PublicarParaCorretorCRM(m.CorretorID, sse.Evento{
+// publicar registra a mudanca de status para o tempo real. Retentativa
+// (status continua 'pendente') nao publica: nao muda nada que a tela
+// precise refletir ainda.
+//
+// Desde a fase 7 isto grava em `evento` em vez de publicar no hub local:
+// o corretor pode estar com o EventSource aberto em outra instancia, e
+// era exatamente esse o teto que a fase derruba.
+func (w *Worker) publicar(ctx context.Context, m store.SelecionarPendentesParaEnvioRow, status string) {
+	if err := eventos.RegistrarParaCorretorCRM(ctx, w.fila, m.CorretorID, sse.Evento{
 		Tipo:       sse.EventoMensagemStatus,
 		MensagemID: m.ID,
 		ConversaID: m.ConversaID,
 		Status:     status,
-	})
+	}); err != nil {
+		slog.Error("outbox: registrar evento de status", "mensagem_id", m.ID, "status", status, "erro", err)
+	}
 }
 
 // registrarOcorrenciasDLP grava avisar/bloquear para o relatorio do

@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/LucasGardoni/whatsapp-gateway/internal/auditoria"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/eventos"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/http/middleware"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/matcher"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
@@ -42,9 +43,6 @@ const origemProvedorZAPI = "zapi"
 type WebhookZAPI struct {
 	pool     *pgxpool.Pool
 	baixador *midia.Baixador
-	// Hub e opcional -- se nil, o webhook processa normalmente mas ninguem
-	// e notificado em tempo real (fase 7).
-	Hub *sse.Hub
 }
 
 func NovoWebhookZAPI(pool *pgxpool.Pool, baixador *midia.Baixador) *WebhookZAPI {
@@ -228,20 +226,23 @@ func (h *WebhookZAPI) processarMensagemRecebida(payloadBrutoID int64, corpo []by
 		return
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		slog.Error("webhook zapi: commit", "erro", err)
+	// o evento entra na MESMA transacao (fase 7): o gatilho de pg_notify
+	// dispara no commit, entao ninguem e notificado de uma mensagem que a
+	// transacao acabou descartando -- a mesma garantia de antes, agora
+	// valendo para todas as instancias e nao so para esta.
+	if err := eventos.RegistrarParaCorretorCRM(ctx, queries, conversa.CorretorID, sse.Evento{
+		Tipo:       sse.EventoMensagemNova,
+		MensagemID: mensagemID,
+		ConversaID: conversa.ID,
+		Status:     "pendente",
+	}); err != nil {
+		slog.Error("webhook zapi: registrar evento de mensagem nova", "mensagem_id", mensagemID, "erro", err)
 		return
 	}
 
-	// publica so depois do commit -- um corretor nao pode ser notificado
-	// de uma mensagem que a transacao acabou descartando.
-	if h.Hub != nil {
-		h.Hub.PublicarParaCorretorCRM(conversa.CorretorID, sse.Evento{
-			Tipo:       sse.EventoMensagemNova,
-			MensagemID: mensagemID,
-			ConversaID: conversa.ID,
-			Status:     "pendente",
-		})
+	if err := tx.Commit(ctx); err != nil {
+		slog.Error("webhook zapi: commit", "erro", err)
+		return
 	}
 }
 
@@ -296,16 +297,15 @@ func (h *WebhookZAPI) OnMessageStatus(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("webhook zapi: status recebido para mensagem desconhecida", "provedor_msg_id", id)
 			continue
 		}
-		if h.Hub == nil {
-			continue
-		}
 		for _, m := range atualizadas {
-			h.Hub.PublicarParaCorretorCRM(m.CorretorID, sse.Evento{
+			if err := eventos.RegistrarParaCorretorCRM(r.Context(), queries, m.CorretorID, sse.Evento{
 				Tipo:       sse.EventoMensagemStatus,
 				MensagemID: m.ID,
 				ConversaID: m.ConversaID,
 				Status:     m.Status,
-			})
+			}); err != nil {
+				slog.Error("webhook zapi: registrar evento de status", "mensagem_id", m.ID, "erro", err)
+			}
 		}
 	}
 
@@ -391,13 +391,13 @@ func (h *WebhookZAPI) OnMessageSend(w http.ResponseWriter, r *http.Request) {
 				"mensagem_id", m.ID, "provedor_msg_id", id, "erro_zapi", payload.Error)
 			h.registrarAlertaDeEnvio(ctx, log, payload, m.ID)
 
-			if h.Hub != nil {
-				h.Hub.PublicarParaCorretorCRM(m.CorretorID, sse.Evento{
-					Tipo:       sse.EventoMensagemStatus,
-					MensagemID: m.ID,
-					ConversaID: m.ConversaID,
-					Status:     m.Status,
-				})
+			if err := eventos.RegistrarParaCorretorCRM(ctx, queries, m.CorretorID, sse.Evento{
+				Tipo:       sse.EventoMensagemStatus,
+				MensagemID: m.ID,
+				ConversaID: m.ConversaID,
+				Status:     m.Status,
+			}); err != nil {
+				log.Error("webhook zapi: registrar evento de status", "mensagem_id", m.ID, "erro", err)
 			}
 		}
 	}

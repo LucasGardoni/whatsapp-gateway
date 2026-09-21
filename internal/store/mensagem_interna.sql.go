@@ -42,17 +42,17 @@ RETURNING id, canal_ref_id, criado_em
 `
 
 type CriarMensagemInternaParams struct {
-	RemetenteExterno *string `json:"remetente_externo"`
-	ConteudoCifrado  []byte  `json:"conteudo_cifrado"`
-	CifraAlg         *string `json:"cifra_alg"`
-	CifraVersao      *int32  `json:"cifra_versao"`
-	AplicacaoID      int64   `json:"aplicacao_id"`
-	CanalExterno     string  `json:"canal_externo"`
+	RemetenteExterno string `json:"remetente_externo"`
+	ConteudoCifrado  []byte `json:"conteudo_cifrado"`
+	CifraAlg         string `json:"cifra_alg"`
+	CifraVersao      int32  `json:"cifra_versao"`
+	AplicacaoID      int64  `json:"aplicacao_id"`
+	CanalExterno     string `json:"canal_externo"`
 }
 
 type CriarMensagemInternaRow struct {
 	ID         int64            `json:"id"`
-	CanalRefID *int64           `json:"canal_ref_id"`
+	CanalRefID int64            `json:"canal_ref_id"`
 	CriadoEm   pgtype.Timestamp `json:"criado_em"`
 }
 
@@ -103,10 +103,10 @@ type ListarMensagensDoCanalParams struct {
 
 type ListarMensagensDoCanalRow struct {
 	ID               int64            `json:"id"`
-	RemetenteExterno *string          `json:"remetente_externo"`
+	RemetenteExterno string           `json:"remetente_externo"`
 	ConteudoCifrado  []byte           `json:"conteudo_cifrado"`
-	CifraAlg         *string          `json:"cifra_alg"`
-	CifraVersao      *int32           `json:"cifra_versao"`
+	CifraAlg         string           `json:"cifra_alg"`
+	CifraVersao      int32            `json:"cifra_versao"`
 	CriadoEm         pgtype.Timestamp `json:"criado_em"`
 }
 

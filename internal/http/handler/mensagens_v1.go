@@ -14,7 +14,6 @@ import (
 
 	"github.com/LucasGardoni/whatsapp-gateway/internal/http/middleware"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/mensagem"
-	"github.com/LucasGardoni/whatsapp-gateway/internal/sse"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
 )
 
@@ -38,9 +37,6 @@ type MensagensV1 struct {
 	// precisa achar o `if` certo. A chave nao aceitar valor desconhecido e
 	// o que devolve 400 na entrada.
 	entregadores map[string]Entregador
-	// Hub e opcional -- nil grava normalmente e nao notifica ninguem em
-	// tempo real, equivalente a nao ter SSE configurado.
-	Hub *sse.Hub
 }
 
 func NovoMensagensV1(pool *pgxpool.Pool, midiaDir string) *MensagensV1 {
@@ -112,16 +108,15 @@ func (h *MensagensV1) Criar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entrega, err := entregar(r.Context(), h.pool, h.Hub, entregador, &app, req)
+	entrega, err := entregar(r.Context(), h.pool, entregador, &app, req)
 	if err != nil {
 		responderErro(w, err, "rota", "/v1/mensagens", "aplicacao", app.Codigo, "canal", req.Canal)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	// 201 nos dois canais (secao 6.1). A rota legada /api/mensagens
-	// responde 200 -- mesma linha gravada, mesma cadeia, mesmo evento; so
-	// o codigo difere, e mudar o da rota legada quebraria quem ja a chama.
+	// 201 nos dois canais (secao 6.1). Ate a fase 8 havia a rota legada
+	// /api/mensagens respondendo 200 com a mesma implementacao; ela saiu.
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(criarMensagemV1Response{ID: entrega.ID, Status: entrega.Status})
 }
@@ -185,10 +180,10 @@ func (h *MensagensV1) Historico(w http.ResponseWriter, r *http.Request) {
 	for _, l := range linhas {
 		resp.Mensagens = append(resp.Mensagens, mensagemHistoricoResponse{
 			ID:              l.ID,
-			Remetente:       textoOuVazio(l.RemetenteExterno),
+			Remetente:       l.RemetenteExterno,
 			ConteudoCifrado: base64.StdEncoding.EncodeToString(l.ConteudoCifrado),
-			CifraAlg:        textoOuVazio(l.CifraAlg),
-			CifraVersao:     inteiroOuZero(l.CifraVersao),
+			CifraAlg:        l.CifraAlg,
+			CifraVersao:     l.CifraVersao,
 			CriadoEm:        l.CriadoEm.Time.Format("2006-01-02T15:04:05"),
 		})
 		resp.UltimoID = l.ID
@@ -212,18 +207,4 @@ func inteiroDaQuery(w http.ResponseWriter, r *http.Request, nome string, padrao 
 		return 0, false
 	}
 	return valor, true
-}
-
-func textoOuVazio(p *string) string {
-	if p == nil {
-		return ""
-	}
-	return *p
-}
-
-func inteiroOuZero(p *int32) int32 {
-	if p == nil {
-		return 0
-	}
-	return *p
 }

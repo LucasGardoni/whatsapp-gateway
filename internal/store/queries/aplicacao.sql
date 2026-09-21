@@ -21,16 +21,6 @@ SELECT id, codigo, nome, ativo, criado_em
 FROM aplicacao
 WHERE codigo = $1;
 
--- name: SincronizarTokenAplicacao :one
--- Upsert usado na subida para a aplicacao 'crm' herdar o
--- GATEWAY_SERVICE_TOKEN atual (a migration nao le ambiente, e o segredo
--- nao pode ficar versionado). Idempotente: subir duas vezes com o mesmo
--- token nao muda nada.
-INSERT INTO aplicacao (codigo, nome, token_hash)
-VALUES ($1, $2, $3)
-ON CONFLICT (codigo) DO UPDATE SET token_hash = EXCLUDED.token_hash
-RETURNING id, codigo, nome, ativo;
-
 -- name: ListarAplicacoes :many
 SELECT id, codigo, nome, ativo, criado_em
 FROM aplicacao

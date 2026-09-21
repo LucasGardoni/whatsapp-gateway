@@ -117,39 +117,3 @@ func (q *Queries) ListarAplicacoes(ctx context.Context) ([]ListarAplicacoesRow, 
 	}
 	return items, nil
 }
-
-const sincronizarTokenAplicacao = `-- name: SincronizarTokenAplicacao :one
-INSERT INTO aplicacao (codigo, nome, token_hash)
-VALUES ($1, $2, $3)
-ON CONFLICT (codigo) DO UPDATE SET token_hash = EXCLUDED.token_hash
-RETURNING id, codigo, nome, ativo
-`
-
-type SincronizarTokenAplicacaoParams struct {
-	Codigo    string `json:"codigo"`
-	Nome      string `json:"nome"`
-	TokenHash string `json:"token_hash"`
-}
-
-type SincronizarTokenAplicacaoRow struct {
-	ID     int64  `json:"id"`
-	Codigo string `json:"codigo"`
-	Nome   string `json:"nome"`
-	Ativo  bool   `json:"ativo"`
-}
-
-// Upsert usado na subida para a aplicacao 'crm' herdar o
-// GATEWAY_SERVICE_TOKEN atual (a migration nao le ambiente, e o segredo
-// nao pode ficar versionado). Idempotente: subir duas vezes com o mesmo
-// token nao muda nada.
-func (q *Queries) SincronizarTokenAplicacao(ctx context.Context, arg SincronizarTokenAplicacaoParams) (SincronizarTokenAplicacaoRow, error) {
-	row := q.db.QueryRow(ctx, sincronizarTokenAplicacao, arg.Codigo, arg.Nome, arg.TokenHash)
-	var i SincronizarTokenAplicacaoRow
-	err := row.Scan(
-		&i.ID,
-		&i.Codigo,
-		&i.Nome,
-		&i.Ativo,
-	)
-	return i, err
-}

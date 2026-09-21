@@ -5,7 +5,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -37,9 +36,13 @@ func NovoSessoesSSE(assinador *sse.AssinadorSessao) *SessoesSSE {
 }
 
 type criarSessaoSSERequest struct {
-	// CorretorID e o campo legado de /api/sessoes-sse.
-	CorretorID int64 `json:"corretor_id"`
-	// Destino e o campo opaco de /v1/sessoes.
+	// Destino e o identificador opaco do assinante, dono da aplicacao.
+	//
+	// Ate a fase 8 havia tambem um `corretor_id` aqui, de
+	// /api/sessoes-sse: o gateway traduzia para o destino "<id>" sob a
+	// aplicacao 'crm'. A rota saiu e o CRM passou a mandar o mesmo id como
+	// destino opaco, entao a chave de entrega nao mudou -- so deixou de
+	// ser o gateway quem sabia o que ela significava.
 	Destino string `json:"destino"`
 }
 
@@ -57,10 +60,9 @@ func (h *SessoesSSE) Criar(w http.ResponseWriter, r *http.Request) {
 
 	app, autenticada := middleware.AplicacaoDoContexto(r.Context())
 	if !autenticada {
-		// o caminho legado (token de servico unico) nao identifica
-		// aplicacao, e sem aplicacao nao ha como compor a chave do hub sem
-		// inventar uma -- que e justamente o que separa um consumidor do
-		// outro. Melhor recusar do que adivinhar.
+		// sem aplicacao nao ha como compor a chave do hub sem inventar
+		// uma -- que e justamente o que separa um consumidor do outro.
+		// Melhor recusar do que adivinhar.
 		http.Error(w, "use um token de aplicacao para /v1/sessoes", http.StatusForbidden)
 		return
 	}
@@ -72,22 +74,6 @@ func (h *SessoesSSE) Criar(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.emitir(w, app.Codigo, destino)
-}
-
-// CriarLegado atende /api/sessoes-sse: recebe corretor_id e traduz para o
-// destino "crm:<id>". Ponte de compatibilidade -- some na fase 8, quando o
-// CRM passar a pedir sessao como qualquer outra aplicacao.
-func (h *SessoesSSE) CriarLegado(w http.ResponseWriter, r *http.Request) {
-	req, ok := h.lerRequisicao(w, r)
-	if !ok {
-		return
-	}
-	if req.CorretorID == 0 {
-		http.Error(w, "corretor_id e obrigatorio", http.StatusBadRequest)
-		return
-	}
-
-	h.emitir(w, sse.AplicacaoCRM, strconv.FormatInt(req.CorretorID, 10))
 }
 
 func (h *SessoesSSE) lerRequisicao(w http.ResponseWriter, r *http.Request) (criarSessaoSSERequest, bool) {

@@ -33,7 +33,7 @@ type Leads struct {
 	// VerifyToken autentica o handshake GET exigido pela Meta antes dela
 	// aceitar configurar um webhook (contrato da plataforma, nao decisao
 	// deste projeto). Vazio == handshake sempre falha (fail closed, mesmo
-	// padrao do GATEWAY_SERVICE_TOKEN).
+	// padrao dos demais segredos).
 	VerifyToken string
 }
 

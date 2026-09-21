@@ -14,9 +14,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/LucasGardoni/whatsapp-gateway/internal/alerta"
-	"github.com/LucasGardoni/whatsapp-gateway/internal/chatinterno"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/config"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/dlp"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/eventos"
 	httpserver "github.com/LucasGardoni/whatsapp-gateway/internal/http"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/http/handler"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/http/middleware"
@@ -30,11 +30,6 @@ import (
 	"github.com/LucasGardoni/whatsapp-gateway/internal/sse"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
 )
-
-// aplicacaoLegada e o codigo da aplicacao que herda o GATEWAY_SERVICE_TOKEN
-// -- todo o historico anterior ao barramento veio dela (ver backfill da
-// migration 00016).
-const aplicacaoLegada = "crm"
 
 func main() {
 	if err := run(); err != nil {
@@ -68,19 +63,20 @@ func run() error {
 		SomenteAvisar:      cfg.DLPSomenteAvisar,
 	})
 
-	// hub e assinador sao o lado go do tempo real. O assinador substituiu o
-	// TokenStore em memoria na fase 3 do barramento: token assinado por
-	// HMAC nao precisa de estado compartilhado, entao deixa de haver o
-	// teto de instancia unica.
+	// hub, assinador e escutador sao o lado go do tempo real. O assinador
+	// substituiu o TokenStore em memoria na fase 3 do barramento: token
+	// assinado por HMAC nao precisa de estado compartilhado. O escutador
+	// fechou o outro lado do mesmo teto na fase 7: quem grava a mensagem
+	// nao publica mais no hub do proprio processo, e sim uma linha em
+	// `evento`; e o escutador, em CADA instancia, que a entrega ao hub
+	// dela. Sem ele o gateway grava tudo certo e nenhuma tela se mexe.
 	hub := sse.NovoHub()
 	assinadorSSE := sse.NovoAssinadorSessao(cfg.SSESigningKey)
+	escutadorEventos := eventos.NovoEscutador(cfg.DatabaseURL, queries, hub, eventos.Config{})
 
 	worker := outbox.NovoWorker(queries, zapiCliente, motorDLP, outbox.Config{MidiaDir: cfg.MidiaDir})
-	worker.Hub = hub
 
 	monitorSaude := saude.NovoMonitor(zapiCliente, queries, saude.Config{NomeProvedor: "zapi"})
-
-	pollerChatInterno := chatinterno.NovoPoller(queries, hub, chatinterno.Config{})
 
 	monitorAlerta := alerta.NovoMonitor(queries, alerta.Config{})
 
@@ -88,15 +84,11 @@ func run() error {
 
 	baixador := midia.NovoBaixador(cfg.MidiaDir)
 	webhookZAPI := handler.NovoWebhookZAPI(pool, baixador)
-	webhookZAPI.Hub = hub
 
 	identidadeCliente := identidade.NovoCliente(cfg.ZAPIInstanceID, cfg.ZAPIInstanceToken, cfg.ZAPIClientToken)
 	disparo := handler.NovoDisparo(pool, identidadeCliente, cfg.PublicBaseURL)
 	transbordo := handler.NovoTransbordo(pool)
-	mensagens := handler.NovoMensagens(pool, cfg.MidiaDir)
-	mensagens.Hub = hub
 	mensagensV1 := handler.NovoMensagensV1(pool, cfg.MidiaDir)
-	mensagensV1.Hub = hub
 	sessoesSSE := handler.NovoSessoesSSE(assinadorSSE)
 	eventos := handler.NovoEventos(hub, assinadorSSE, cfg.CORSOrigemCRM)
 	zapiAdmin := handler.NovoZAPIAdmin(zapiCliente)
@@ -112,25 +104,19 @@ func run() error {
 		slog.Warn("SSE_SIGNING_KEY vazia: o tempo real fica desligado (POST /v1/sessoes, POST /api/sessoes-sse e GET /eventos respondem 503). Gere uma com: openssl rand -base64 32")
 	}
 
-	// Identidade por aplicacao (barramento, fase 1). A migration 00016 cria
-	// a linha 'crm' com um token_hash sentinela porque migration nao le
-	// ambiente -- e aqui que ela herda o GATEWAY_SERVICE_TOKEN atual, para
-	// o CRM continuar autenticando sem nenhuma troca de credencial.
+	// Identidade por aplicacao (barramento, fase 1) -- desde a fase 8, a
+	// UNICA autenticacao de servico que existe.
+	//
+	// Nao ha mais bootstrap por variavel de ambiente: ate a fase 7 o
+	// gateway sincronizava aqui o hash do GATEWAY_SERVICE_TOKEN para a
+	// aplicacao 'crm', como ponte para o CRM nao trocar de credencial na
+	// migracao. A ponte cumpriu o papel e saiu junto com a variavel.
+	//
+	// Aplicacao nova (ou banco recriado do zero) se registra com
+	// scripts/registrar-aplicacao.ps1, que gera o token e grava so o hash.
 	autenticadorApp := middleware.NovoAutenticadorAplicacao(queries)
-	if cfg.GatewayServiceToken != "" {
-		if _, err := queries.SincronizarTokenAplicacao(ctx, store.SincronizarTokenAplicacaoParams{
-			Codigo:    aplicacaoLegada,
-			Nome:      "CRM de corretores",
-			TokenHash: middleware.HashToken(cfg.GatewayServiceToken),
-		}); err != nil {
-			// nao e fatal: o token de servico unico segue valendo em
-			// paralelo ate a fase 8, entao o gateway ainda atende -- so
-			// sem gravar procedencia.
-			slog.Error("nao foi possivel sincronizar o token da aplicacao crm; /api/* segue no token de servico unico, sem procedencia", "erro", err)
-		}
-	}
 
-	router := httpserver.NovoRouter(webhookZAPI, disparo, transbordo, mensagens, mensagensV1, sessoesSSE, eventos, zapiAdmin, leads, canais, cfg.GatewayServiceToken, autenticadorApp, cfg.WebhookPathSecret, cfg.RateLimitPorMinuto)
+	router := httpserver.NovoRouter(webhookZAPI, disparo, transbordo, mensagensV1, sessoesSSE, eventos, zapiAdmin, leads, canais, autenticadorApp, cfg.WebhookPathSecret, cfg.RateLimitPorMinuto)
 
 	// Sem timeout nenhum, uma conexao aberta e ociosa segura um goroutine e
 	// um descritor para sempre -- e o gateway fica exposto na internet
@@ -171,10 +157,10 @@ func run() error {
 		saudeErr <- monitorSaude.Executar(ctx)
 	}()
 
-	chatInternoErr := make(chan error, 1)
+	eventosErr := make(chan error, 1)
 	go func() {
-		slog.Info("poller de chat interno iniciado")
-		chatInternoErr <- pollerChatInterno.Executar(ctx)
+		slog.Info("escutador de eventos iniciado")
+		eventosErr <- escutadorEventos.Executar(ctx)
 	}()
 
 	alertaErr := make(chan error, 1)
@@ -207,9 +193,9 @@ func run() error {
 			return fmt.Errorf("monitor de saude: %w", err)
 		}
 		return nil
-	case err := <-chatInternoErr:
+	case err := <-eventosErr:
 		if err != nil {
-			return fmt.Errorf("poller de chat interno: %w", err)
+			return fmt.Errorf("escutador de eventos: %w", err)
 		}
 		return nil
 	case err := <-alertaErr:
@@ -245,8 +231,8 @@ func run() error {
 		return fmt.Errorf("monitor de saude: %w", err)
 	}
 
-	if err := <-chatInternoErr; err != nil {
-		return fmt.Errorf("poller de chat interno: %w", err)
+	if err := <-eventosErr; err != nil {
+		return fmt.Errorf("escutador de eventos: %w", err)
 	}
 
 	if err := <-alertaErr; err != nil {

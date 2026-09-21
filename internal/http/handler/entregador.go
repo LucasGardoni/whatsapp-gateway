@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/LucasGardoni/whatsapp-gateway/internal/auditoria"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/eventos"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/http/middleware"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/mensagem"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
@@ -43,30 +44,29 @@ type Entregador interface {
 
 // Entrega e o resultado de Persistir.
 //
-// Publicar substitui o Notificar(ctx, id) que o plano previa na interface:
-// notificar depois do commit precisa saber PARA QUEM, e no canal interno
-// essa lista tem de ser lida dentro da transacao (fase 5, decisao 7) --
-// depois do commit ja e tarde, quem acabou de sair do canal ainda
-// receberia. Uma closure fechada dentro de Persistir carrega a lista sem
-// que o caminho comum precise conhecer nenhum dos dois formatos de destino.
-//
-// Publicar nulo e valido: e "gravou e nao ha ninguem a avisar".
+// Nao ha mais nada aqui sobre notificar: desde a fase 7 quem publica
+// grava uma linha em `evento` DENTRO da propria transacao (ver
+// internal/eventos), e o unico que entrega no hub e o escutador de
+// LISTEN/NOTIFY. Isso resolve de uma vez os dois problemas que a closure
+// de antes resolvia pela metade: a lista de destinos continua sendo lida
+// dentro da transacao (fase 5, decisao 7) e a entrega deixa de ser local
+// a instancia que recebeu a requisicao.
 type Entrega struct {
-	ID       int64
-	Status   string
-	Publicar func(*sse.Hub)
+	ID     int64
+	Status string
 }
 
 // entregar e o caminho comum dos dois canais, e o unico lugar que abre a
 // transacao de escrita de mensagem.
 //
-// app nulo e a rota legada POST /api/mensagens autenticada pelo
-// GATEWAY_SERVICE_TOKEN, que nao identifica aplicacao -- some na fase 8.
-// Em /v1/* ele nunca e nulo.
+// app e sempre preenchido desde a fase 8: a rota legada sem aplicacao
+// identificada foi removida junto com o GATEWAY_SERVICE_TOKEN. O ponteiro
+// continua opcional na assinatura porque `procedencia` ja trata o nulo, e
+// trocar isso por valor obrigaria a inventar uma aplicacao vazia nos
+// testes que nao tratam de procedencia.
 func entregar(
 	ctx context.Context,
 	pool *pgxpool.Pool,
-	hub *sse.Hub,
 	e Entregador,
 	app *middleware.Aplicacao,
 	req mensagem.Requisicao,
@@ -88,16 +88,13 @@ func entregar(
 		return Entrega{}, err
 	}
 
+	// nao ha publicacao depois do commit: o evento ja foi gravado junto
+	// com a mensagem e quem o entrega e o gatilho de pg_notify, que dispara
+	// NO commit. Publicar aqui tambem duplicaria o evento na instancia que
+	// originou a requisicao -- e so para quem enviou, que e o sintoma mais
+	// dificil de reproduzir em dev (risco R3).
 	if err := tx.Commit(ctx); err != nil {
 		return Entrega{}, fmt.Errorf("commit: %w", err)
-	}
-
-	// publica so depois do commit: ninguem pode ser avisado de uma
-	// mensagem que a transacao acabou descartando. Na fase 7 esta
-	// publicacao direta sai e a fonte unica passa a ser o pg_notify --
-	// manter as duas duplicaria o evento para quem enviou.
-	if hub != nil && entrega.Publicar != nil {
-		entrega.Publicar(hub)
 	}
 	return entrega, nil
 }
@@ -210,19 +207,16 @@ func (e entregadorWhatsApp) Persistir(ctx context.Context, q *store.Queries, app
 		return Entrega{}, fmt.Errorf("registrar hash de auditoria da mensagem %d: %w", linha.ID, err)
 	}
 
-	corretorID := conversa.CorretorID
-	return Entrega{
-		ID:     linha.ID,
-		Status: linha.Status,
-		Publicar: func(hub *sse.Hub) {
-			hub.PublicarParaCorretorCRM(corretorID, sse.Evento{
-				Tipo:       sse.EventoMensagemNova,
-				MensagemID: linha.ID,
-				ConversaID: linha.ConversaID,
-				Status:     linha.Status,
-			})
-		},
-	}, nil
+	if err := eventos.RegistrarParaCorretorCRM(ctx, q, conversa.CorretorID, sse.Evento{
+		Tipo:       sse.EventoMensagemNova,
+		MensagemID: linha.ID,
+		ConversaID: linha.ConversaID,
+		Status:     linha.Status,
+	}); err != nil {
+		return Entrega{}, err
+	}
+
+	return Entrega{ID: linha.ID, Status: linha.Status}, nil
 }
 
 // entregadorInterno grava o blob que o gateway NAO consegue abrir -- a
@@ -255,10 +249,10 @@ func (entregadorInterno) Persistir(ctx context.Context, q *store.Queries, app *m
 	linha, err := q.CriarMensagemInterna(ctx, store.CriarMensagemInternaParams{
 		AplicacaoID:      app.ID,
 		CanalExterno:     msg.CanalExterno,
-		RemetenteExterno: &msg.Remetente,
+		RemetenteExterno: msg.Remetente,
 		ConteudoCifrado:  msg.ConteudoCifrado,
-		CifraAlg:         &msg.CifraAlg,
-		CifraVersao:      &msg.CifraVersao,
+		CifraAlg:         msg.CifraAlg,
+		CifraVersao:      msg.CifraVersao,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		// o INSERT ... SELECT nao acha canal: ou nao existe, ou e de outra
@@ -270,13 +264,9 @@ func (entregadorInterno) Persistir(ctx context.Context, q *store.Queries, app *m
 		return Entrega{}, fmt.Errorf("criar mensagem interna: %w", err)
 	}
 
-	// canal_ref_id nunca volta nulo aqui: a linha acabou de ser inserida a
-	// partir de uma linha de canal. Conferido mesmo assim porque a
-	// alternativa seria desreferenciar e derrubar o processo.
-	if linha.CanalRefID == nil {
-		return Entrega{}, fmt.Errorf("mensagem interna %d gravada sem canal", linha.ID)
-	}
-	canalID := *linha.CanalRefID
+	// desde a fase 8 canal_ref_id e NOT NULL no schema, entao nao ha mais
+	// o que conferir aqui: nao existe mensagem interna fora de um canal.
+	canalID := linha.CanalRefID
 
 	// a cadeia encadeia o CIPHERTEXT (secao 4, "Auditoria sob cifra"):
 	// continua provando ordem e integridade, e deixa de provar conteudo
@@ -304,19 +294,19 @@ func (entregadorInterno) Persistir(ctx context.Context, q *store.Queries, app *m
 		return Entrega{}, fmt.Errorf("listar destinos do canal %d: %w", canalID, err)
 	}
 
-	canalExterno := msg.CanalExterno
+	if err := eventos.Registrar(ctx, q, chaves, sse.Evento{
+		Tipo:         sse.EventoMensagemInternaNova,
+		MensagemID:   linha.ID,
+		CanalExterno: msg.CanalExterno,
+	}); err != nil {
+		return Entrega{}, err
+	}
+
 	return Entrega{
 		ID: linha.ID,
 		// "registrada", e nao "pendente" como no WhatsApp: 'pendente' e o
 		// primeiro estado de uma maquina de entrega que o canal interno
 		// nao tem. Divergencia consciente de 6.1, registrada na fase 5.
 		Status: "registrada",
-		Publicar: func(hub *sse.Hub) {
-			hub.Publicar(chaves, sse.Evento{
-				Tipo:         sse.EventoMensagemInternaNova,
-				MensagemID:   linha.ID,
-				CanalExterno: canalExterno,
-			})
-		},
 	}, nil
 }

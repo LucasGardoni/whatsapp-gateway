@@ -18,10 +18,14 @@ import (
 // discriminador no payload -- configure cada um no painel Z-API apontando
 // pro path correspondente (secao 4.4 permite endpoint por webhook).
 //
-// /api/* e chamado so pelo backend do CRM, nunca pelo browser -- protegido
-// por tokenServico (GATEWAY_SERVICE_TOKEN, fase 7). /eventos e o
+// /api/* e chamado so por backend de aplicacao, nunca pelo browser --
+// protegido por token de aplicacao (barramento, fase 1). /eventos e o
 // EventSource do browser, autenticado por token curto na query string
 // (ver internal/sse e internal/http/handler/sessoes_sse.go).
+//
+// Fase 8: o GATEWAY_SERVICE_TOKEN unico acabou. Toda rota autenticada
+// resolve uma aplicacao, entao toda escrita tem procedencia -- nao ha
+// mais o caminho anonimo que gravava sem saber quem chamou.
 //
 // Os webhooks levam segredoWebhook no path (WEBHOOK_PATH_SECRET) porque
 // quem os chama e um terceiro que nao manda header -- ver
@@ -31,17 +35,16 @@ func NovoRouter(
 	webhookZAPI *handler.WebhookZAPI,
 	disparo *handler.Disparo,
 	transbordo *handler.Transbordo,
-	mensagens *handler.Mensagens,
 	mensagensV1 *handler.MensagensV1,
 	sessoesSSE *handler.SessoesSSE,
 	eventos *handler.Eventos,
 	zapiAdmin *handler.ZAPIAdmin,
 	leads *handler.Leads,
 	canais *handler.Canais,
-	tokenServico string,
 	// autenticadorApp e a identidade por aplicacao (barramento, fase 1).
-	// Pode ser nil: nesse caso /api/* cai no token de servico unico, que e
-	// exatamente o comportamento anterior.
+	// Desde a fase 8 ele e a UNICA autenticacao de servico que existe: o
+	// GATEWAY_SERVICE_TOKEN unico foi removido. Nil deixa as rotas
+	// autenticadas fora do ar, em vez de abertas.
 	autenticadorApp *middleware.AutenticadorAplicacao,
 	segredoWebhook string,
 	rateLimitPorMinuto int,
@@ -96,39 +99,43 @@ func NovoRouter(
 
 	r.Get("/eventos", eventos.Servir)
 
-	r.Group(func(r chi.Router) {
-		// aceita o token unico e o token por aplicacao em paralelo (fase 1
-		// do barramento) -- o unico sai na fase 8.
-		r.Use(middleware.ExigirServicoOuAplicacao(tokenServico, autenticadorApp))
-		r.Post("/api/mensagens", mensagens.Criar)
-		r.Post("/api/sessoes-sse", sessoesSSE.CriarLegado)
+	// as rotas de servico que sobraram da fase 8. Elas nao viraram /v1/
+	// porque nao sao barramento: sao operacoes do CRM sobre o dominio do
+	// WhatsApp (fila da Z-API, disparo, importacao de lead) que continuam
+	// exatamente como estavam -- so a autenticacao mudou, de token unico
+	// para token de aplicacao.
+	//
+	// Envio de mensagem e sessao de SSE sairam daqui: viraram
+	// POST /v1/mensagens e POST /v1/sessoes.
+	if autenticadorApp != nil {
+		r.Group(func(r chi.Router) {
+			r.Use(autenticadorApp.Middleware)
 
-		// /disparos criava token de transbordo e resolvia @lid sem nenhuma
-		// autenticacao (P1-14) -- exposto na internet, um estranho gerava
-		// disparo em nome da empresa. Quem chama e o backend do CRM, entao
-		// o token de servico e o mesmo de /api/*. O path segue sem /api/
-		// por compatibilidade com o que a auditoria documentou.
-		r.Post("/disparos", disparo.Criar)
+			// /disparos criava token de transbordo e resolvia @lid sem
+			// nenhuma autenticacao (P1-14) -- exposto na internet, um
+			// estranho gerava disparo em nome da empresa. O path segue sem
+			// /api/ por compatibilidade com o que a auditoria documentou.
+			r.Post("/disparos", disparo.Criar)
 
-		// gestao de fila e qr code de reconexao (fase 9) -- painel de
-		// supervisao do CRM, nunca exposto ao browser diretamente.
-		r.Get("/api/zapi/fila", zapiAdmin.Fila)
-		r.Delete("/api/zapi/fila", zapiAdmin.LimparFila)
-		r.Delete("/api/zapi/fila/{id}", zapiAdmin.LimparItemFila)
-		r.Get("/api/zapi/qrcode", zapiAdmin.QRCode)
+			// gestao de fila e qr code de reconexao (fase 9) -- painel de
+			// supervisao do CRM, nunca exposto ao browser diretamente.
+			r.Get("/api/zapi/fila", zapiAdmin.Fila)
+			r.Delete("/api/zapi/fila", zapiAdmin.LimparFila)
+			r.Delete("/api/zapi/fila/{id}", zapiAdmin.LimparItemFila)
+			r.Get("/api/zapi/qrcode", zapiAdmin.QRCode)
 
-		// job de reenvio e upload de csv (fase 11) -- dono e o supervisor,
-		// a tela que aciona e 100% CRM (ver plano, secao "Fase 11").
-		r.Post("/api/leads/reenvio", disparo.Reenviar)
-		r.Post("/api/leads/importar-csv", leads.ImportarCSV)
-	})
+			// job de reenvio e upload de csv (fase 11) -- dono e o
+			// supervisor, a tela que aciona e 100% CRM (ver plano, secao
+			// "Fase 11").
+			r.Post("/api/leads/reenvio", disparo.Reenviar)
+			r.Post("/api/leads/importar-csv", leads.ImportarCSV)
+		})
+	}
 
-	// /v1/* e o barramento (fases 3 e 4). Diferente de /api/*, aqui a
-	// autenticacao e ESTRITA: so token de aplicacao, nunca o
-	// GATEWAY_SERVICE_TOKEN unico. Sem aplicacao identificada nao ha como
-	// escopar canal nem compor a chave do hub, e um escopo adivinhado
-	// atravessaria a fronteira entre consumidores -- que e a unica coisa
-	// que este prefixo existe para garantir.
+	// /v1/* e o barramento (fases 3 e 4). Sem aplicacao identificada nao
+	// ha como escopar canal nem compor a chave do hub, e um escopo
+	// adivinhado atravessaria a fronteira entre consumidores -- que e a
+	// unica coisa que este prefixo existe para garantir.
 	//
 	// autenticadorApp nil (sem banco na subida) deixa /v1/* fora do ar em
 	// vez de aberto.
@@ -139,9 +146,9 @@ func NovoRouter(
 			r.Post("/v1/sessoes", sessoesSSE.Criar)
 
 			// entrada unificada do barramento (fase 6): os dois canais no
-			// mesmo endpoint, escolhidos pelo campo `canal` do corpo.
-			// POST /api/mensagens continua valendo e e a MESMA
-			// implementacao -- sai na fase 8.
+			// mesmo endpoint, escolhidos pelo campo `canal` do corpo. Era
+			// POST /api/mensagens em paralelo ate a fase 8, que removeu a
+			// rota legada -- esta sempre foi a mesma implementacao.
 			r.Post("/v1/mensagens", mensagensV1.Criar)
 
 			// canal e lista de entrega (fase 4) -- todas idempotentes, para

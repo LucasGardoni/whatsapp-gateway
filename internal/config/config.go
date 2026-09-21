@@ -23,18 +23,12 @@ type Config struct {
 
 	// MetaWebhookVerifyToken autentica o handshake GET que a Meta exige
 	// antes de aceitar mandar POST pro webhook de leads (fase 11). Vazio
-	// desliga a verificacao (fail closed, mesmo padrao do GatewayServiceToken).
+	// desliga a verificacao (fail closed, mesmo padrao de WebhookPathSecret).
 	MetaWebhookVerifyToken string
 
 	MidiaDir string
 
 	PublicBaseURL string
-
-	// GatewayServiceToken autentica chamadas de servico do CRM (POST
-	// /api/mensagens, POST /api/sessoes-sse, POST /disparos -- fase 7).
-	// Vazio desliga esses endpoints (fail closed, ver
-	// internal/http/middleware).
-	GatewayServiceToken string
 
 	// CORSOrigemCRM e a origem exata do CRM (esquema://host:porta) que pode
 	// abrir o EventSource de /eventos. O browser do corretor carrega a
@@ -68,9 +62,8 @@ type Config struct {
 	// uma instancia: qualquer instancia que compartilhe esta chave valida
 	// o token que outra emitiu.
 	//
-	// Vazia fecha o tempo real inteiro -- POST /v1/sessoes,
-	// POST /api/sessoes-sse e GET /eventos respondem 503 (fail closed,
-	// mesmo padrao de GatewayServiceToken e WebhookPathSecret). Assinar
+	// Vazia fecha o tempo real inteiro -- POST /v1/sessoes e GET /eventos
+	// respondem 503 (fail closed, mesmo padrao de WebhookPathSecret). Assinar
 	// com segredo vazio deixaria qualquer um forjar token para qualquer
 	// destino, que e pior que nao ter tempo real.
 	//
@@ -99,8 +92,6 @@ func Load() (*Config, error) {
 		MidiaDir: getEnv("MIDIA_DIR", "./dados/midia"),
 
 		PublicBaseURL: getEnv("PUBLIC_BASE_URL", "http://localhost:8080"),
-
-		GatewayServiceToken: os.Getenv("GATEWAY_SERVICE_TOKEN"),
 
 		CORSOrigemCRM: os.Getenv("CORS_ORIGEM_CRM"),
 

@@ -85,6 +85,14 @@ type Equipe struct {
 	Nome string `json:"nome"`
 }
 
+type Evento struct {
+	ID        int64              `json:"id"`
+	Chaves    []string           `json:"chaves"`
+	Aplicacao *string            `json:"aplicacao"`
+	Payload   []byte             `json:"payload"`
+	CriadoEm  pgtype.Timestamptz `json:"criado_em"`
+}
+
 type Faq struct {
 	ID               int64  `json:"id"`
 	Pergunta         string `json:"pergunta"`
@@ -147,16 +155,13 @@ type Mensagem struct {
 
 type MensagemInterna struct {
 	ID               int64            `json:"id"`
-	CanalID          *int64           `json:"canal_id"`
-	UsuarioID        *int64           `json:"usuario_id"`
-	Texto            *string          `json:"texto"`
 	CriadoEm         pgtype.Timestamp `json:"criado_em"`
-	AplicacaoID      *int64           `json:"aplicacao_id"`
-	CanalRefID       *int64           `json:"canal_ref_id"`
-	RemetenteExterno *string          `json:"remetente_externo"`
+	AplicacaoID      int64            `json:"aplicacao_id"`
+	CanalRefID       int64            `json:"canal_ref_id"`
+	RemetenteExterno string           `json:"remetente_externo"`
 	ConteudoCifrado  []byte           `json:"conteudo_cifrado"`
-	CifraAlg         *string          `json:"cifra_alg"`
-	CifraVersao      *int32           `json:"cifra_versao"`
+	CifraAlg         string           `json:"cifra_alg"`
+	CifraVersao      int32            `json:"cifra_versao"`
 	HashAnterior     *string          `json:"hash_anterior"`
 	Hash             *string          `json:"hash"`
 }
