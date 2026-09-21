@@ -3,51 +3,55 @@ package handler
 import (
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/LucasGardoni/whatsapp-gateway/internal/auditoria"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/http/middleware"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/mensagem"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/sse"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
 )
 
-// MensagensV1 e a entrada do barramento (fase 5): o gateway deixa de so
-// ler mensagem interna e passa a escreve-la.
+// MensagensV1 e a entrada unificada do barramento: um endpoint, dois
+// canais (fase 6).
 //
-// O que ele grava e um blob que ele NAO consegue abrir -- a chave fica no
-// backend da aplicacao e nunca transita por aqui (secao 4 do plano). Isso
-// nao e zelo: e o que torna tecnicamente impossivel, e nao apenas
-// proibido, implementar regra sobre o conteudo de uma mensagem interna.
-// Se um dia aparecer neste arquivo qualquer coisa que leia o conteudo, o
-// modelo foi quebrado.
+// O que ele grava no canal interno e um blob que ele NAO consegue abrir --
+// a chave fica no backend da aplicacao e nunca transita por aqui (secao 4
+// do plano). Isso nao e zelo: e o que torna tecnicamente impossivel, e nao
+// apenas proibido, implementar regra sobre o conteudo de uma mensagem
+// interna. Se um dia aparecer neste arquivo qualquer coisa que leia o
+// conteudo, o modelo foi quebrado.
 //
-// Na fase 6 este handler ganha canal=whatsapp e o Entregador polimorfico;
-// hoje ele so atende canal=interno.
+// A diferenca entre os dois canais esta inteira nos Entregadores
+// (entregador.go). Aqui so existe o que e comum: autenticar, decodificar,
+// escolher pelo DADO `canal` e responder.
 type MensagensV1 struct {
 	pool *pgxpool.Pool
+	// entregadores e um mapa, e nao um switch, porque o canal e dado e nao
+	// codigo: adicionar um canal novo e registrar uma entrada, e ninguem
+	// precisa achar o `if` certo. A chave nao aceitar valor desconhecido e
+	// o que devolve 400 na entrada.
+	entregadores map[string]Entregador
 	// Hub e opcional -- nil grava normalmente e nao notifica ninguem em
 	// tempo real, equivalente a nao ter SSE configurado.
 	Hub *sse.Hub
 }
 
-func NovoMensagensV1(pool *pgxpool.Pool) *MensagensV1 {
-	return &MensagensV1{pool: pool}
+func NovoMensagensV1(pool *pgxpool.Pool, midiaDir string) *MensagensV1 {
+	return &MensagensV1{
+		pool: pool,
+		entregadores: map[string]Entregador{
+			mensagem.CanalWhatsApp: entregadorWhatsApp{midiaDir: midiaDir},
+			mensagem.CanalInterno:  entregadorInterno{},
+		},
+	}
 }
-
-// canalInterno e o unico valor aceito hoje em canal. O campo existe desde
-// ja (e nao so na fase 6) para a aplicacao nao ter de mudar o payload
-// depois: quem escrever "canal": "interno" agora continua valendo quando
-// "whatsapp" entrar.
-const canalInterno = "interno"
 
 // limiteHistoricoPadrao e limiteHistoricoMaximo paginam o historico. Sem
 // teto, um limite grande transforma uma leitura de tela num dump do canal
@@ -58,30 +62,11 @@ const (
 	limiteHistoricoMaximo = 500
 )
 
-type criarMensagemV1Request struct {
-	Canal string `json:"canal"`
-	// CanalExterno, Remetente e ConteudoCifrado sao opacos: strings cujo
-	// significado pertence a aplicacao.
-	CanalExterno string `json:"canal_externo"`
-	Remetente    string `json:"remetente"`
-	// ConteudoCifrado chega em base64 (nonce || ciphertext). Base64 porque
-	// JSON nao carrega bytes -- a decodificacao aqui nao e leitura do
-	// conteudo, e transporte.
-	ConteudoCifrado string `json:"conteudo_cifrado"`
-	CifraAlg        string `json:"cifra_alg"`
-	CifraVersao     int32  `json:"cifra_versao"`
-}
-
 type criarMensagemV1Response struct {
 	ID int64 `json:"id"`
-	// Status e "registrada", e nao "pendente" como no WhatsApp.
-	//
-	// O plano (6.1) previa resposta identica nos dois canais, mas
-	// "pendente" e o primeiro estado de uma maquina de entrega que o canal
-	// interno nao tem: nao ha outbox, nao ha retry e nao ha status que
-	// mude depois. Responder "pendente" mandaria a aplicacao esperar uma
-	// transicao que nunca chega. A diferenca esta registrada no plano,
-	// fase 5.
+	// Status diverge por canal: "pendente" no WhatsApp, primeiro estado da
+	// maquina de entrega, e "registrada" no interno, que nao tem maquina
+	// de entrega nenhuma. Ver entregador.go e o registro da fase 5.
 	Status string `json:"status"`
 }
 
@@ -103,7 +88,7 @@ type historicoResponse struct {
 	UltimoID int64 `json:"ultimo_id"`
 }
 
-// Criar atende POST /v1/mensagens.
+// Criar atende POST /v1/mensagens, nos dois canais.
 func (h *MensagensV1) Criar(w http.ResponseWriter, r *http.Request) {
 	app, autenticada := middleware.AplicacaoDoContexto(r.Context())
 	if !autenticada {
@@ -114,148 +99,43 @@ func (h *MensagensV1) Criar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req criarMensagemV1Request
+	var req mensagem.Requisicao
 	if err := json.NewDecoder(io.LimitReader(r.Body, tamanhoMaximoPayload)).Decode(&req); err != nil {
 		http.Error(w, "payload invalido", http.StatusBadRequest)
 		return
 	}
 
-	switch strings.TrimSpace(req.Canal) {
-	case canalInterno:
-	case "whatsapp":
-		// dizer onde esta o caminho que funciona hoje poupa a equipe
-		// integradora de descobrir por tentativa que /v1 ainda nao cobre
-		// WhatsApp. Sai na fase 6, quando passar a cobrir.
-		http.Error(w, "canal whatsapp ainda nao atendido em /v1/mensagens: use POST /api/mensagens", http.StatusBadRequest)
-		return
-	default:
-		http.Error(w, "canal e obrigatorio: use interno", http.StatusBadRequest)
+	req.Canal = strings.TrimSpace(req.Canal)
+	entregador, conhecido := h.entregadores[req.Canal]
+	if !conhecido {
+		http.Error(w, "canal e obrigatorio: use "+h.canaisAceitos(), http.StatusBadRequest)
 		return
 	}
 
-	// base64 invalido e erro de transporte, nao de conteudo -- o gateway
-	// nao esta olhando o que ha dentro, so desfazendo o envelope que o
-	// JSON exigiu.
-	conteudo, err := base64.StdEncoding.DecodeString(strings.TrimSpace(req.ConteudoCifrado))
+	entrega, err := entregar(r.Context(), h.pool, h.Hub, entregador, &app, req)
 	if err != nil {
-		http.Error(w, "conteudo_cifrado deve ser base64", http.StatusBadRequest)
+		responderErro(w, err, "rota", "/v1/mensagens", "aplicacao", app.Codigo, "canal", req.Canal)
 		return
-	}
-
-	msg := mensagem.Interna{
-		CanalExterno:    strings.TrimSpace(req.CanalExterno),
-		Remetente:       strings.TrimSpace(req.Remetente),
-		ConteudoCifrado: conteudo,
-		CifraAlg:        strings.TrimSpace(req.CifraAlg),
-		CifraVersao:     req.CifraVersao,
-	}
-	if err := msg.Validar(); err != nil {
-		if mensagem.EhValidacao(err) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		slog.Error("mensagens v1: validar", "aplicacao", app.Codigo, "erro", err)
-		http.Error(w, "erro interno", http.StatusInternalServerError)
-		return
-	}
-
-	ctx := r.Context()
-
-	// tx envolve o insert e o elo de auditoria -- os dois confirmam
-	// juntos, senao um crash entre eles deixa a mensagem fora da cadeia.
-	// Mesmo padrao de handler/mensagens.go.
-	tx, err := h.pool.Begin(ctx)
-	if err != nil {
-		slog.Error("mensagens v1: iniciar transacao", "aplicacao", app.Codigo, "erro", err)
-		http.Error(w, "erro interno", http.StatusInternalServerError)
-		return
-	}
-	defer tx.Rollback(ctx)
-
-	queries := store.New(tx)
-
-	linha, err := queries.CriarMensagemInterna(ctx, store.CriarMensagemInternaParams{
-		AplicacaoID:      app.ID,
-		CanalExterno:     msg.CanalExterno,
-		RemetenteExterno: &msg.Remetente,
-		ConteudoCifrado:  msg.ConteudoCifrado,
-		CifraAlg:         &msg.CifraAlg,
-		CifraVersao:      &msg.CifraVersao,
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		// o INSERT ... SELECT nao acha canal: ou nao existe, ou e de outra
-		// aplicacao. As duas respondem igual, de proposito -- distinguir
-		// confirmaria a existencia do canal alheio.
-		http.Error(w, "canal nao encontrado", http.StatusNotFound)
-		return
-	}
-	if err != nil {
-		slog.Error("mensagens v1: criar mensagem interna", "aplicacao", app.Codigo, "erro", err)
-		http.Error(w, "erro interno", http.StatusInternalServerError)
-		return
-	}
-
-	// canal_ref_id nunca volta nulo aqui: a linha acabou de ser inserida a
-	// partir de uma linha de canal. Conferido mesmo assim porque a
-	// alternativa seria desreferenciar e derrubar o processo.
-	if linha.CanalRefID == nil {
-		slog.Error("mensagens v1: mensagem gravada sem canal", "aplicacao", app.Codigo, "mensagem_id", linha.ID)
-		http.Error(w, "erro interno", http.StatusInternalServerError)
-		return
-	}
-	canalID := *linha.CanalRefID
-
-	// a cadeia encadeia o CIPHERTEXT (secao 4, "Auditoria sob cifra"):
-	// continua provando ordem e integridade, e deixa de provar conteudo
-	// sem a chave da aplicacao -- que e o esperado no modelo (a), nao uma
-	// perda acidental.
-	if err := auditoria.RegistrarHashInterna(ctx, queries, linha.ID,
-		auditoria.CamposMensagemInterna(auditoria.MensagemInterna{
-			ID:              linha.ID,
-			CanalID:         canalID,
-			Remetente:       msg.Remetente,
-			CifraAlg:        msg.CifraAlg,
-			CifraVersao:     msg.CifraVersao,
-			ConteudoCifrado: msg.ConteudoCifrado,
-			Origem:          app.Codigo,
-		})...,
-	); err != nil {
-		slog.Error("mensagens v1: registrar hash", "mensagem_id", linha.ID, "erro", err)
-		http.Error(w, "erro interno", http.StatusInternalServerError)
-		return
-	}
-
-	// a lista de entrega e lida DENTRO da transacao: quem foi removido do
-	// canal no mesmo instante nao deve receber, e ler depois do commit
-	// abriria essa janela.
-	chaves, err := queries.ListarChavesDeEntregaDoCanal(ctx, canalID)
-	if err != nil {
-		slog.Error("mensagens v1: listar destinos do canal", "canal_id", canalID, "erro", err)
-		http.Error(w, "erro interno", http.StatusInternalServerError)
-		return
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		slog.Error("mensagens v1: commit", "aplicacao", app.Codigo, "erro", err)
-		http.Error(w, "erro interno", http.StatusInternalServerError)
-		return
-	}
-
-	// publica so depois do commit: ninguem pode ser avisado de uma
-	// mensagem que a transacao acabou descartando. Na fase 7 esta
-	// publicacao direta sai e a fonte unica passa a ser o pg_notify --
-	// manter as duas duplicaria o evento para quem enviou.
-	if h.Hub != nil {
-		h.Hub.Publicar(chaves, sse.Evento{
-			Tipo:         sse.EventoMensagemInternaNova,
-			MensagemID:   linha.ID,
-			CanalExterno: msg.CanalExterno,
-		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	// 201 nos dois canais (secao 6.1). A rota legada /api/mensagens
+	// responde 200 -- mesma linha gravada, mesma cadeia, mesmo evento; so
+	// o codigo difere, e mudar o da rota legada quebraria quem ja a chama.
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(criarMensagemV1Response{ID: linha.ID, Status: "registrada"})
+	_ = json.NewEncoder(w).Encode(criarMensagemV1Response{ID: entrega.ID, Status: entrega.Status})
+}
+
+// canaisAceitos monta a lista para a mensagem de erro a partir do mapa, e
+// nao de uma string fixa: literal ao lado de mapa envelhece calado, e
+// quem integra descobre o canal que existe lendo o codigo do gateway.
+func (h *MensagensV1) canaisAceitos() string {
+	nomes := make([]string, 0, len(h.entregadores))
+	for nome := range h.entregadores {
+		nomes = append(nomes, nome)
+	}
+	sort.Strings(nomes)
+	return strings.Join(nomes, " ou ")
 }
 
 // Historico atende GET /v1/canais/{canal_externo}/mensagens (secao 6.3).

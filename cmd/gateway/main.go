@@ -95,7 +95,7 @@ func run() error {
 	transbordo := handler.NovoTransbordo(pool)
 	mensagens := handler.NovoMensagens(pool, cfg.MidiaDir)
 	mensagens.Hub = hub
-	mensagensV1 := handler.NovoMensagensV1(pool)
+	mensagensV1 := handler.NovoMensagensV1(pool, cfg.MidiaDir)
 	mensagensV1.Hub = hub
 	sessoesSSE := handler.NovoSessoesSSE(assinadorSSE)
 	eventos := handler.NovoEventos(hub, assinadorSSE, cfg.CORSOrigemCRM)

@@ -138,9 +138,10 @@ func NovoRouter(
 
 			r.Post("/v1/sessoes", sessoesSSE.Criar)
 
-			// entrada do barramento (fase 5). Hoje so canal=interno; o
-			// canal=whatsapp entra na fase 6, no mesmo endpoint, para a
-			// aplicacao nao ter de trocar de rota depois.
+			// entrada unificada do barramento (fase 6): os dois canais no
+			// mesmo endpoint, escolhidos pelo campo `canal` do corpo.
+			// POST /api/mensagens continua valendo e e a MESMA
+			// implementacao -- sai na fase 8.
 			r.Post("/v1/mensagens", mensagensV1.Criar)
 
 			// canal e lista de entrega (fase 4) -- todas idempotentes, para
