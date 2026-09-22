@@ -11,17 +11,28 @@
 -- mas a igualdade do Postgres depende de collation e para em curto-
 -- circuito no primeiro byte diferente; refazer no Go custa nada e tira o
 -- unico ponto de comparacao de segredo de fora do nosso controle.
-SELECT id, codigo, nome, ativo, token_hash
+--
+-- Os tres campos de politica (limites e pode_ler_metricas) vem no mesmo
+-- SELECT de proposito: sao lidos a cada requisicao, e o cache do
+-- middleware ja guarda a linha inteira -- buscar cada um na hora de usar
+-- seria um SELECT por politica por requisicao.
+SELECT id, codigo, nome, ativo, token_hash,
+       limite_requisicoes_por_minuto, limite_conteudo_cifrado_bytes,
+       pode_ler_metricas
 FROM aplicacao
 WHERE token_hash = $1
   AND ativo;
 
 -- name: BuscarAplicacaoPorCodigo :one
-SELECT id, codigo, nome, ativo, criado_em
+SELECT id, codigo, nome, ativo, criado_em,
+       limite_requisicoes_por_minuto, limite_conteudo_cifrado_bytes,
+       pode_ler_metricas
 FROM aplicacao
 WHERE codigo = $1;
 
 -- name: ListarAplicacoes :many
-SELECT id, codigo, nome, ativo, criado_em
+SELECT id, codigo, nome, ativo, criado_em,
+       limite_requisicoes_por_minuto, limite_conteudo_cifrado_bytes,
+       pode_ler_metricas
 FROM aplicacao
 ORDER BY codigo;

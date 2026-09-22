@@ -9,19 +9,23 @@ import (
 )
 
 type Alertum struct {
-	ID       int64            `json:"id"`
-	Tipo     string           `json:"tipo"`
-	Detalhe  *string          `json:"detalhe"`
-	CriadoEm pgtype.Timestamp `json:"criado_em"`
+	ID          int64            `json:"id"`
+	Tipo        string           `json:"tipo"`
+	Detalhe     *string          `json:"detalhe"`
+	CriadoEm    pgtype.Timestamp `json:"criado_em"`
+	AplicacaoID *int64           `json:"aplicacao_id"`
 }
 
 type Aplicacao struct {
-	ID        int64            `json:"id"`
-	Codigo    string           `json:"codigo"`
-	Nome      string           `json:"nome"`
-	TokenHash string           `json:"token_hash"`
-	Ativo     bool             `json:"ativo"`
-	CriadoEm  pgtype.Timestamp `json:"criado_em"`
+	ID                         int64            `json:"id"`
+	Codigo                     string           `json:"codigo"`
+	Nome                       string           `json:"nome"`
+	TokenHash                  string           `json:"token_hash"`
+	Ativo                      bool             `json:"ativo"`
+	CriadoEm                   pgtype.Timestamp `json:"criado_em"`
+	LimiteRequisicoesPorMinuto *int32           `json:"limite_requisicoes_por_minuto"`
+	LimiteConteudoCifradoBytes *int32           `json:"limite_conteudo_cifrado_bytes"`
+	PodeLerMetricas            bool             `json:"pode_ler_metricas"`
 }
 
 type Canal struct {

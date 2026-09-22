@@ -7,6 +7,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/LucasGardoni/whatsapp-gateway/internal/mensagem"
 )
 
 type Config struct {
@@ -57,6 +59,29 @@ type Config struct {
 	// servico) contra abuso (fase 12). <= 0 desliga o limite.
 	RateLimitPorMinuto int
 
+	// RateLimitAplicacaoPorMinuto e o teto por APLICACAO nas rotas
+	// autenticadas (barramento, fase 9). <= 0 desliga.
+	//
+	// Bem mais alto que o limite por IP e de proposito: aqui o chamador e
+	// um backend identificado, que legitimamente rajada (um disparo, uma
+	// importacao de CSV), e nao um cliente abrindo um link. O que este
+	// numero existe para conter e laco de integracao, ordens de grandeza
+	// acima do uso normal.
+	//
+	// aplicacao.limite_requisicoes_por_minuto sobrescreve isto por
+	// aplicacao -- e por isso que apertar uma integracao nova nao exige
+	// mexer aqui nem reiniciar nada.
+	RateLimitAplicacaoPorMinuto int
+
+	// LimiteConteudoCifradoBytes e o teto de conteudo_cifrado por
+	// mensagem interna (fase 9), quando a aplicacao nao tem um proprio em
+	// aplicacao.limite_conteudo_cifrado_bytes.
+	//
+	// <= 0 cai no default conservador de mensagem.Interna -- nao desliga.
+	// Teto desligado aqui nao e escolha defensavel: e a tabela que todas
+	// as aplicacoes compartilham, e quem enche e o bug de uma delas.
+	LimiteConteudoCifradoBytes int
+
 	// SSESigningKey assina os tokens de sessao do EventSource (barramento,
 	// fase 3). Substitui o TokenStore em memoria, que prendia o gateway a
 	// uma instancia: qualquer instancia que compartilhe esta chave valida
@@ -100,7 +125,10 @@ func Load() (*Config, error) {
 		DLPDominiosPermitidos: getLista("DLP_DOMINIOS_PERMITIDOS"),
 		DLPSomenteAvisar:      os.Getenv("DLP_SOMENTE_AVISAR") == "true",
 
-		RateLimitPorMinuto: getInt("RATE_LIMIT_POR_MINUTO", 60),
+		RateLimitPorMinuto:          getInt("RATE_LIMIT_POR_MINUTO", 60),
+		RateLimitAplicacaoPorMinuto: getInt("RATE_LIMIT_APLICACAO_POR_MINUTO", 600),
+
+		LimiteConteudoCifradoBytes: getInt("LIMITE_CONTEUDO_CIFRADO_BYTES", mensagem.TamanhoMaximoConteudoCifradoPadrao),
 
 		SSESigningKey: os.Getenv("SSE_SIGNING_KEY"),
 	}

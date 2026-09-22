@@ -12,17 +12,22 @@ import (
 )
 
 const buscarAplicacaoPorCodigo = `-- name: BuscarAplicacaoPorCodigo :one
-SELECT id, codigo, nome, ativo, criado_em
+SELECT id, codigo, nome, ativo, criado_em,
+       limite_requisicoes_por_minuto, limite_conteudo_cifrado_bytes,
+       pode_ler_metricas
 FROM aplicacao
 WHERE codigo = $1
 `
 
 type BuscarAplicacaoPorCodigoRow struct {
-	ID       int64            `json:"id"`
-	Codigo   string           `json:"codigo"`
-	Nome     string           `json:"nome"`
-	Ativo    bool             `json:"ativo"`
-	CriadoEm pgtype.Timestamp `json:"criado_em"`
+	ID                         int64            `json:"id"`
+	Codigo                     string           `json:"codigo"`
+	Nome                       string           `json:"nome"`
+	Ativo                      bool             `json:"ativo"`
+	CriadoEm                   pgtype.Timestamp `json:"criado_em"`
+	LimiteRequisicoesPorMinuto *int32           `json:"limite_requisicoes_por_minuto"`
+	LimiteConteudoCifradoBytes *int32           `json:"limite_conteudo_cifrado_bytes"`
+	PodeLerMetricas            bool             `json:"pode_ler_metricas"`
 }
 
 func (q *Queries) BuscarAplicacaoPorCodigo(ctx context.Context, codigo string) (BuscarAplicacaoPorCodigoRow, error) {
@@ -34,23 +39,31 @@ func (q *Queries) BuscarAplicacaoPorCodigo(ctx context.Context, codigo string) (
 		&i.Nome,
 		&i.Ativo,
 		&i.CriadoEm,
+		&i.LimiteRequisicoesPorMinuto,
+		&i.LimiteConteudoCifradoBytes,
+		&i.PodeLerMetricas,
 	)
 	return i, err
 }
 
 const buscarAplicacaoPorTokenHash = `-- name: BuscarAplicacaoPorTokenHash :one
-SELECT id, codigo, nome, ativo, token_hash
+SELECT id, codigo, nome, ativo, token_hash,
+       limite_requisicoes_por_minuto, limite_conteudo_cifrado_bytes,
+       pode_ler_metricas
 FROM aplicacao
 WHERE token_hash = $1
   AND ativo
 `
 
 type BuscarAplicacaoPorTokenHashRow struct {
-	ID        int64  `json:"id"`
-	Codigo    string `json:"codigo"`
-	Nome      string `json:"nome"`
-	Ativo     bool   `json:"ativo"`
-	TokenHash string `json:"token_hash"`
+	ID                         int64  `json:"id"`
+	Codigo                     string `json:"codigo"`
+	Nome                       string `json:"nome"`
+	Ativo                      bool   `json:"ativo"`
+	TokenHash                  string `json:"token_hash"`
+	LimiteRequisicoesPorMinuto *int32 `json:"limite_requisicoes_por_minuto"`
+	LimiteConteudoCifradoBytes *int32 `json:"limite_conteudo_cifrado_bytes"`
+	PodeLerMetricas            bool   `json:"pode_ler_metricas"`
 }
 
 // Autenticacao de servico (fase 1 do barramento). Filtra por ativo aqui e
@@ -65,6 +78,11 @@ type BuscarAplicacaoPorTokenHashRow struct {
 // mas a igualdade do Postgres depende de collation e para em curto-
 // circuito no primeiro byte diferente; refazer no Go custa nada e tira o
 // unico ponto de comparacao de segredo de fora do nosso controle.
+//
+// Os tres campos de politica (limites e pode_ler_metricas) vem no mesmo
+// SELECT de proposito: sao lidos a cada requisicao, e o cache do
+// middleware ja guarda a linha inteira -- buscar cada um na hora de usar
+// seria um SELECT por politica por requisicao.
 func (q *Queries) BuscarAplicacaoPorTokenHash(ctx context.Context, tokenHash string) (BuscarAplicacaoPorTokenHashRow, error) {
 	row := q.db.QueryRow(ctx, buscarAplicacaoPorTokenHash, tokenHash)
 	var i BuscarAplicacaoPorTokenHashRow
@@ -74,22 +92,30 @@ func (q *Queries) BuscarAplicacaoPorTokenHash(ctx context.Context, tokenHash str
 		&i.Nome,
 		&i.Ativo,
 		&i.TokenHash,
+		&i.LimiteRequisicoesPorMinuto,
+		&i.LimiteConteudoCifradoBytes,
+		&i.PodeLerMetricas,
 	)
 	return i, err
 }
 
 const listarAplicacoes = `-- name: ListarAplicacoes :many
-SELECT id, codigo, nome, ativo, criado_em
+SELECT id, codigo, nome, ativo, criado_em,
+       limite_requisicoes_por_minuto, limite_conteudo_cifrado_bytes,
+       pode_ler_metricas
 FROM aplicacao
 ORDER BY codigo
 `
 
 type ListarAplicacoesRow struct {
-	ID       int64            `json:"id"`
-	Codigo   string           `json:"codigo"`
-	Nome     string           `json:"nome"`
-	Ativo    bool             `json:"ativo"`
-	CriadoEm pgtype.Timestamp `json:"criado_em"`
+	ID                         int64            `json:"id"`
+	Codigo                     string           `json:"codigo"`
+	Nome                       string           `json:"nome"`
+	Ativo                      bool             `json:"ativo"`
+	CriadoEm                   pgtype.Timestamp `json:"criado_em"`
+	LimiteRequisicoesPorMinuto *int32           `json:"limite_requisicoes_por_minuto"`
+	LimiteConteudoCifradoBytes *int32           `json:"limite_conteudo_cifrado_bytes"`
+	PodeLerMetricas            bool             `json:"pode_ler_metricas"`
 }
 
 func (q *Queries) ListarAplicacoes(ctx context.Context) ([]ListarAplicacoesRow, error) {
@@ -107,6 +133,9 @@ func (q *Queries) ListarAplicacoes(ctx context.Context) ([]ListarAplicacoesRow, 
 			&i.Nome,
 			&i.Ativo,
 			&i.CriadoEm,
+			&i.LimiteRequisicoesPorMinuto,
+			&i.LimiteConteudoCifradoBytes,
+			&i.PodeLerMetricas,
 		); err != nil {
 			return nil, err
 		}

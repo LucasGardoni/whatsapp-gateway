@@ -38,12 +38,20 @@ var molduraCifra = map[string]int{
 	CifraAES256GCM: 12 + 16,
 }
 
-// TamanhoMaximoConteudoCifrado limita o blob por mensagem.
+// TamanhoMaximoConteudoCifradoPadrao limita o blob por mensagem quando
+// nem o processo nem a aplicacao dizem outra coisa.
 //
-// Conservador de proposito (fase 9 torna isso configuravel por
-// aplicacao): mensagem de chat cifrada nao chega perto disso, e sem teto
-// uma aplicacao com bug de laco enche a tabela que todo mundo compartilha.
-const TamanhoMaximoConteudoCifrado = 64 << 10 // 64KB
+// Conservador de proposito: mensagem de chat cifrada nao chega perto
+// disso, e sem teto uma aplicacao com bug de laco enche a tabela que todo
+// mundo compartilha.
+//
+// Desde a fase 9 o teto e configuravel em dois niveis --
+// LIMITE_CONTEUDO_CIFRADO_BYTES no processo e
+// aplicacao.limite_conteudo_cifrado_bytes por aplicacao. O default subiu
+// de constante para piso: e o que vale quando os dois estao ausentes, e
+// e por isso que ele continua conservador. Um default generoso seria o
+// limite real de quem nunca configurou nada.
+const TamanhoMaximoConteudoCifradoPadrao = 64 << 10 // 64KB
 
 // TamanhoMaximoRemetente casa com o teto de canal_externo e destino
 // (handler.tamanhoMaximoIdentificador): sao todos identificadores opacos
@@ -84,7 +92,17 @@ type Interna struct {
 
 // Validar recusa o que nao da para gravar de forma util. Toda falha aqui
 // e ErroValidacao.
-func (m Interna) Validar() error {
+//
+// limiteConteudoCifrado <= 0 cai no default (fase 9). O limite entra como
+// PARAMETRO e nao como campo da Interna porque nao e propriedade da
+// mensagem: a mesma mensagem e aceita por uma aplicacao e recusada por
+// outra, e guardar o teto junto do conteudo faria parecer que ele viajou
+// com ela.
+func (m Interna) Validar(limiteConteudoCifrado int) error {
+	if limiteConteudoCifrado <= 0 {
+		limiteConteudoCifrado = TamanhoMaximoConteudoCifradoPadrao
+	}
+
 	switch {
 	case m.CanalExterno == "":
 		return invalido("canal_externo e obrigatorio")
@@ -116,8 +134,11 @@ func (m Interna) Validar() error {
 		return invalido("conteudo_cifrado e obrigatorio")
 	case len(m.ConteudoCifrado) <= moldura:
 		return invalido("conteudo_cifrado menor que a moldura de %s (%d bytes): parece truncado ou nao cifrado", m.CifraAlg, moldura)
-	case len(m.ConteudoCifrado) > TamanhoMaximoConteudoCifrado:
-		return invalido("conteudo_cifrado excede %d bytes", TamanhoMaximoConteudoCifrado)
+	case len(m.ConteudoCifrado) > limiteConteudoCifrado:
+		// o limite vai na mensagem: quem integra precisa saber o teto que
+		// vale para ELE, e nao existe um so -- descobrir isso por
+		// tentativa e o que a fase 9 evita ao mandar o numero de volta.
+		return invalido("conteudo_cifrado excede %d bytes", limiteConteudoCifrado)
 	}
 
 	return nil

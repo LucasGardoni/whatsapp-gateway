@@ -22,6 +22,7 @@ import (
 	"github.com/LucasGardoni/whatsapp-gateway/internal/http/middleware"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/identidade"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/ingestao"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/metrica"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/outbox"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor/zapi"
@@ -78,9 +79,18 @@ func run() error {
 
 	monitorSaude := saude.NovoMonitor(zapiCliente, queries, saude.Config{NomeProvedor: "zapi"})
 
+	// o mesmo monitor cobre os dois alertas de volume: o da empresa
+	// (destinatarios distintos, risco de banimento do numero) e o por
+	// aplicacao (fase 9, integracao em laco). Um ticker, duas consultas --
+	// nao ha por que somar uma goroutine e um canal de erro para a
+	// segunda.
 	monitorAlerta := alerta.NovoMonitor(queries, alerta.Config{})
 
 	monitorRetencao := retencao.NovoMonitor(queries, retencao.Config{})
+
+	// registro de metricas por aplicacao (fase 9). Em memoria e por
+	// instancia -- ver internal/metrica para por que nao vai ao banco.
+	registroMetricas := metrica.NovoRegistro()
 
 	baixador := midia.NovoBaixador(cfg.MidiaDir)
 	webhookZAPI := handler.NovoWebhookZAPI(pool, baixador)
@@ -88,12 +98,13 @@ func run() error {
 	identidadeCliente := identidade.NovoCliente(cfg.ZAPIInstanceID, cfg.ZAPIInstanceToken, cfg.ZAPIClientToken)
 	disparo := handler.NovoDisparo(pool, identidadeCliente, cfg.PublicBaseURL)
 	transbordo := handler.NovoTransbordo(pool)
-	mensagensV1 := handler.NovoMensagensV1(pool, cfg.MidiaDir)
+	mensagensV1 := handler.NovoMensagensV1(pool, cfg.MidiaDir, cfg.LimiteConteudoCifradoBytes, registroMetricas)
 	sessoesSSE := handler.NovoSessoesSSE(assinadorSSE)
-	eventos := handler.NovoEventos(hub, assinadorSSE, cfg.CORSOrigemCRM)
+	eventos := handler.NovoEventos(hub, assinadorSSE, cfg.CORSOrigemCRM, registroMetricas)
 	zapiAdmin := handler.NovoZAPIAdmin(zapiCliente)
 	canais := handler.NovoCanais(pool)
 	leads := handler.NovoLeads(pool, ingestao.RegistroPadrao())
+	metricas := handler.NovoMetricas(registroMetricas)
 	leads.VerifyToken = cfg.MetaWebhookVerifyToken
 
 	if cfg.WebhookPathSecret == "" {
@@ -116,7 +127,11 @@ func run() error {
 	// scripts/registrar-aplicacao.ps1, que gera o token e grava so o hash.
 	autenticadorApp := middleware.NovoAutenticadorAplicacao(queries)
 
-	router := httpserver.NovoRouter(webhookZAPI, disparo, transbordo, mensagensV1, sessoesSSE, eventos, zapiAdmin, leads, canais, autenticadorApp, cfg.WebhookPathSecret, cfg.RateLimitPorMinuto)
+	router := httpserver.NovoRouter(
+		webhookZAPI, disparo, transbordo, mensagensV1, sessoesSSE, eventos, zapiAdmin, leads, canais, metricas,
+		autenticadorApp, registroMetricas,
+		cfg.WebhookPathSecret, cfg.RateLimitPorMinuto, cfg.RateLimitAplicacaoPorMinuto,
+	)
 
 	// Sem timeout nenhum, uma conexao aberta e ociosa segura um goroutine e
 	// um descritor para sempre -- e o gateway fica exposto na internet

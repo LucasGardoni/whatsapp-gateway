@@ -27,6 +27,23 @@ type Aplicacao struct {
 	ID     int64
 	Codigo string
 	Nome   string
+
+	// Os tres campos abaixo sao POLITICA POR APLICACAO, e vem da tabela
+	// (fase 9). E o que a secao 2, item 6 do plano permite: comportamento
+	// por aplicacao existe como dado, nunca como ramo em codigo. Afrouxar
+	// o limite do Portal e um UPDATE; nao ha, e nao pode passar a haver,
+	// um `if` com o codigo da aplicacao em nenhum lugar sob internal/.
+
+	// LimiteRequisicoesPorMinuto nulo = usa o default do processo
+	// (RATE_LIMIT_APLICACAO_POR_MINUTO). Ver LimitePorAplicacao.
+	LimiteRequisicoesPorMinuto *int32
+	// LimiteConteudoCifradoBytes nulo = usa o default do processo
+	// (LIMITE_CONTEUDO_CIFRADO_BYTES).
+	LimiteConteudoCifradoBytes *int32
+	// PodeLerMetricas libera GET /metrics, que mostra o trafego de TODAS
+	// as aplicacoes -- por isso e permissao, e nao rota aberta a quem
+	// tem token.
+	PodeLerMetricas bool
 }
 
 type chaveContextoAplicacao struct{}
@@ -155,7 +172,14 @@ func (a *AutenticadorAplicacao) Resolver(ctx context.Context, token string) (*Ap
 		return nil, nil
 	}
 
-	app := Aplicacao{ID: linha.ID, Codigo: linha.Codigo, Nome: linha.Nome}
+	app := Aplicacao{
+		ID:                         linha.ID,
+		Codigo:                     linha.Codigo,
+		Nome:                       linha.Nome,
+		LimiteRequisicoesPorMinuto: linha.LimiteRequisicoesPorMinuto,
+		LimiteConteudoCifradoBytes: linha.LimiteConteudoCifradoBytes,
+		PodeLerMetricas:            linha.PodeLerMetricas,
+	}
 	a.guardar(hash, entradaCache{app: app, achou: true})
 	return &app, nil
 }

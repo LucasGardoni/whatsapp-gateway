@@ -35,7 +35,13 @@ import (
 type Entregador interface {
 	// Validar roda antes de abrir transacao -- payload recusado nao custa
 	// conexao de banco.
-	Validar(req mensagem.Requisicao) error
+	//
+	// app entra aqui desde a fase 9 porque os LIMITES sao por aplicacao
+	// (aplicacao.limite_conteudo_cifrado_bytes). Isso nao abre a porta
+	// para ramo por aplicacao: o que se le de app e um numero, e quem o
+	// escolheu foi um UPDATE na tabela, nao um `if` aqui (secao 2, item
+	// 6). Comparar app.Codigo com um literal continua proibido.
+	Validar(app *middleware.Aplicacao, req mensagem.Requisicao) error
 	// Persistir grava a mensagem E o elo de auditoria na MESMA transacao
 	// do chamador. As duas cadeias sao separadas (fase 5, decisao 2), e e
 	// por isso que o hash entra aqui e nao no caminho comum.
@@ -71,7 +77,7 @@ func entregar(
 	app *middleware.Aplicacao,
 	req mensagem.Requisicao,
 ) (Entrega, error) {
-	if err := e.Validar(req); err != nil {
+	if err := e.Validar(app, req); err != nil {
 		return Entrega{}, err
 	}
 
@@ -137,7 +143,10 @@ type entregadorWhatsApp struct {
 	midiaDir string
 }
 
-func (e entregadorWhatsApp) Validar(req mensagem.Requisicao) error {
+// Validar ignora app: o canal WhatsApp nao tem limite por aplicacao a
+// aplicar. O teto dele e o da Z-API e o do DLP, que sao do provedor e do
+// conteudo, nao do consumidor.
+func (e entregadorWhatsApp) Validar(_ *middleware.Aplicacao, req mensagem.Requisicao) error {
 	msg := req.ComoWhatsApp()
 	if err := msg.Validar(); err != nil {
 		return err
@@ -222,14 +231,33 @@ func (e entregadorWhatsApp) Persistir(ctx context.Context, q *store.Queries, app
 // entregadorInterno grava o blob que o gateway NAO consegue abrir -- a
 // chave fica no backend da aplicacao e nunca transita por aqui (secao 4).
 // Sem DLP (nao ha o que ler), sem outbox e sem status que mude depois.
-type entregadorInterno struct{}
+type entregadorInterno struct {
+	// limiteConteudoPadrao e o teto de conteudo_cifrado para a aplicacao
+	// que nao tem um proprio na tabela (fase 9). Vem do processo
+	// (LIMITE_CONTEUDO_CIFRADO_BYTES); zero cai no default do pacote
+	// mensagem.
+	limiteConteudoPadrao int
+}
 
-func (entregadorInterno) Validar(req mensagem.Requisicao) error {
+func (e entregadorInterno) Validar(app *middleware.Aplicacao, req mensagem.Requisicao) error {
 	msg, err := req.ComoInterna()
 	if err != nil {
 		return err
 	}
-	return msg.Validar()
+	return msg.Validar(e.limiteConteudo(app))
+}
+
+// limiteConteudo resolve os tres niveis, do mais especifico ao default:
+// limite da aplicacao, limite do processo, default do pacote mensagem.
+//
+// A aplicacao vence o processo de proposito -- e o que permite apertar o
+// teto de uma integracao nova sem apertar o de quem ja opera bem, que e o
+// caso de uso inteiro deste campo.
+func (e entregadorInterno) limiteConteudo(app *middleware.Aplicacao) int {
+	if app != nil && app.LimiteConteudoCifradoBytes != nil {
+		return int(*app.LimiteConteudoCifradoBytes)
+	}
+	return e.limiteConteudoPadrao
 }
 
 func (entregadorInterno) Persistir(ctx context.Context, q *store.Queries, app *middleware.Aplicacao, req mensagem.Requisicao) (Entrega, error) {

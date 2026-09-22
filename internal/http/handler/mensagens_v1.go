@@ -14,6 +14,7 @@ import (
 
 	"github.com/LucasGardoni/whatsapp-gateway/internal/http/middleware"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/mensagem"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/metrica"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
 )
 
@@ -37,15 +38,21 @@ type MensagensV1 struct {
 	// precisa achar o `if` certo. A chave nao aceitar valor desconhecido e
 	// o que devolve 400 na entrada.
 	entregadores map[string]Entregador
+	// registro conta mensagem aceita por aplicacao e canal (fase 9). Nil e
+	// valido -- os testes que nao tratam de metrica nao precisam montar um.
+	registro *metrica.Registro
 }
 
-func NovoMensagensV1(pool *pgxpool.Pool, midiaDir string) *MensagensV1 {
+// NovoMensagensV1 recebe limiteConteudoCifrado (LIMITE_CONTEUDO_CIFRADO_BYTES,
+// fase 9); zero cai no default conservador do pacote mensagem.
+func NovoMensagensV1(pool *pgxpool.Pool, midiaDir string, limiteConteudoCifrado int, registro *metrica.Registro) *MensagensV1 {
 	return &MensagensV1{
 		pool: pool,
 		entregadores: map[string]Entregador{
 			mensagem.CanalWhatsApp: entregadorWhatsApp{midiaDir: midiaDir},
-			mensagem.CanalInterno:  entregadorInterno{},
+			mensagem.CanalInterno:  entregadorInterno{limiteConteudoPadrao: limiteConteudoCifrado},
 		},
+		registro: registro,
 	}
 }
 
@@ -112,6 +119,15 @@ func (h *MensagensV1) Criar(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		responderErro(w, err, "rota", "/v1/mensagens", "aplicacao", app.Codigo, "canal", req.Canal)
 		return
+	}
+
+	// contado DEPOIS de dar certo: a metrica de mensagem mede o que entrou
+	// no barramento, nao o que foi tentado. Payload recusado ja aparece em
+	// gateway_erros_* pelo middleware, e somar as duas coisas na mesma
+	// serie tornaria impossivel distinguir "aplicacao com bug" de
+	// "aplicacao movimentada".
+	if h.registro != nil {
+		h.registro.Mensagem(app.Codigo, req.Canal)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

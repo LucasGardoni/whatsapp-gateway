@@ -11,6 +11,7 @@ import (
 
 	"github.com/LucasGardoni/whatsapp-gateway/internal/http/handler"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/http/middleware"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/metrica"
 )
 
 // NovoRouter registra as rotas HTTP do gateway. Os tres webhooks da Z-API
@@ -41,13 +42,20 @@ func NovoRouter(
 	zapiAdmin *handler.ZAPIAdmin,
 	leads *handler.Leads,
 	canais *handler.Canais,
+	metricas *handler.Metricas,
 	// autenticadorApp e a identidade por aplicacao (barramento, fase 1).
 	// Desde a fase 8 ele e a UNICA autenticacao de servico que existe: o
 	// GATEWAY_SERVICE_TOKEN unico foi removido. Nil deixa as rotas
 	// autenticadas fora do ar, em vez de abertas.
 	autenticadorApp *middleware.AutenticadorAplicacao,
+	// registro alimenta o middleware de metricas (fase 9). Nil desliga a
+	// contagem sem desligar rota nenhuma -- metrica ausente e perda de
+	// visibilidade, nao de seguranca, e nao ha por que fechar o
+	// barramento por causa dela.
+	registro *metrica.Registro,
 	segredoWebhook string,
 	rateLimitPorMinuto int,
+	rateLimitAplicacaoPorMinuto int,
 ) chi.Router {
 	r := chi.NewRouter()
 
@@ -65,6 +73,24 @@ func NovoRouter(
 	// balancer) e /eventos (autenticado por token curto, conexao longa) nao
 	// entram, senao ficariam artificialmente limitados.
 	limiteRequisicoes := middleware.NovoLimiteRequisicoes(rateLimitPorMinuto, time.Minute)
+
+	// as rotas AUTENTICADAS levam limite por aplicacao (fase 9), nao por
+	// IP: atras de um proxy reverso todas as aplicacoes chegam com o mesmo
+	// IP, entao um limite por IP ali ou e alto o bastante para nao
+	// proteger ninguem, ou uma aplicacao em laco consome o teto de todas.
+	limiteAplicacao := middleware.NovoLimitePorAplicacao(rateLimitAplicacaoPorMinuto, time.Minute)
+	// as duas travessias que toda rota autenticada faz, na ordem que
+	// importa: metrica POR FORA do limite, para que o 429 apareca em
+	// gateway_erros_* -- uma aplicacao sendo barrada e precisamente o que
+	// se quer ver no painel, e medir por dentro esconderia isso.
+	porAplicacao := func(r chi.Router) {
+		r.Use(autenticadorApp.Middleware)
+		if registro != nil {
+			r.Use(middleware.Metricas(registro))
+		}
+		r.Use(limiteAplicacao.Middleware)
+	}
+
 	segredo := "/{" + middleware.SegredoPathParam + "}"
 
 	r.Group(func(r chi.Router) {
@@ -109,7 +135,7 @@ func NovoRouter(
 	// POST /v1/mensagens e POST /v1/sessoes.
 	if autenticadorApp != nil {
 		r.Group(func(r chi.Router) {
-			r.Use(autenticadorApp.Middleware)
+			porAplicacao(r)
 
 			// /disparos criava token de transbordo e resolvia @lid sem
 			// nenhuma autenticacao (P1-14) -- exposto na internet, um
@@ -129,6 +155,20 @@ func NovoRouter(
 			// "Fase 11").
 			r.Post("/api/leads/reenvio", disparo.Reenviar)
 			r.Post("/api/leads/importar-csv", leads.ImportarCSV)
+
+			// metricas por aplicacao (fase 9). Nao e /v1/ porque nao e
+			// barramento: e observabilidade do gateway, e quem a le nao
+			// manda nem recebe mensagem por ela.
+			//
+			// Fica atras do token de aplicacao E de
+			// aplicacao.pode_ler_metricas, porque a resposta mostra o
+			// trafego de TODAS as aplicacoes -- ter token nao basta, seria
+			// uma aplicacao vendo o movimento das outras. /metrics aberto
+			// e o default de quase todo servico, e aqui seria a fronteira
+			// da secao 2 furada pela porta dos fundos.
+			if metricas != nil {
+				r.Get("/metrics", metricas.Servir)
+			}
 		})
 	}
 
@@ -141,7 +181,7 @@ func NovoRouter(
 	// vez de aberto.
 	if autenticadorApp != nil {
 		r.Group(func(r chi.Router) {
-			r.Use(autenticadorApp.Middleware)
+			porAplicacao(r)
 
 			r.Post("/v1/sessoes", sessoesSSE.Criar)
 

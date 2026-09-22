@@ -10,26 +10,37 @@ import (
 )
 
 const buscarAlertaRecente = `-- name: BuscarAlertaRecente :one
-SELECT id, tipo, detalhe, criado_em FROM alerta
+SELECT id, tipo, detalhe, criado_em, aplicacao_id FROM alerta
 WHERE tipo = $1
-  AND criado_em >= LOCALTIMESTAMP - make_interval(secs => $2::double precision)
+  AND aplicacao_id IS NOT DISTINCT FROM $2::bigint
+  AND criado_em >= LOCALTIMESTAMP - make_interval(secs => $3::double precision)
 ORDER BY criado_em DESC
 LIMIT 1
 `
 
 type BuscarAlertaRecenteParams struct {
 	Tipo           string  `json:"tipo"`
+	AplicacaoID    *int64  `json:"aplicacao_id"`
 	JanelaSegundos float64 `json:"janela_segundos"`
 }
 
+// Debounce do monitor: existe alerta deste tipo, deste dono, dentro da
+// janela?
+//
+// IS NOT DISTINCT FROM, e nao `=`: aplicacao_id nulo e o alerta da
+// empresa (volume de destinatarios distintos, que mede risco do numero
+// compartilhado), e `aplicacao_id = NULL` nunca casa com nada -- o
+// debounce silenciosamente pararia de funcionar para esse tipo, e o
+// sintoma seria uma linha nova de alerta por ciclo.
 func (q *Queries) BuscarAlertaRecente(ctx context.Context, arg BuscarAlertaRecenteParams) (Alertum, error) {
-	row := q.db.QueryRow(ctx, buscarAlertaRecente, arg.Tipo, arg.JanelaSegundos)
+	row := q.db.QueryRow(ctx, buscarAlertaRecente, arg.Tipo, arg.AplicacaoID, arg.JanelaSegundos)
 	var i Alertum
 	err := row.Scan(
 		&i.ID,
 		&i.Tipo,
 		&i.Detalhe,
 		&i.CriadoEm,
+		&i.AplicacaoID,
 	)
 	return i, err
 }
@@ -55,16 +66,96 @@ func (q *Queries) ContarDestinatariosDistintosNaJanela(ctx context.Context, jane
 	return count, err
 }
 
+const medirVolumePorAplicacao = `-- name: MedirVolumePorAplicacao :many
+WITH movimento AS (
+    SELECT aplicacao_id, criado_em
+      FROM mensagem
+     WHERE direcao = 'saida'
+       AND aplicacao_id IS NOT NULL
+       AND criado_em >= LOCALTIMESTAMP - make_interval(secs => $2::double precision)
+    UNION ALL
+    SELECT aplicacao_id, criado_em
+      FROM mensagem_interna
+     WHERE criado_em >= LOCALTIMESTAMP - make_interval(secs => $2::double precision)
+)
+SELECT a.id AS aplicacao_id,
+       a.codigo,
+       count(*) FILTER (
+           WHERE m.criado_em >= LOCALTIMESTAMP - make_interval(secs => $1::double precision)
+       ) AS na_janela,
+       count(*) AS na_base
+  FROM aplicacao a
+  JOIN movimento m ON m.aplicacao_id = a.id
+ GROUP BY a.id, a.codigo
+ ORDER BY a.codigo
+`
+
+type MedirVolumePorAplicacaoParams struct {
+	JanelaSegundos float64 `json:"janela_segundos"`
+	BaseSegundos   float64 `json:"base_segundos"`
+}
+
+type MedirVolumePorAplicacaoRow struct {
+	AplicacaoID int64  `json:"aplicacao_id"`
+	Codigo      string `json:"codigo"`
+	NaJanela    int64  `json:"na_janela"`
+	NaBase      int64  `json:"na_base"`
+}
+
+// Fase 9: volume recente de cada aplicacao contra a media dela mesma.
+//
+// "N x a media" e sempre a media DA PROPRIA aplicacao, nunca a media
+// entre aplicacoes. Comparar o Portal com o CRM diria so que um e maior
+// que o outro -- o que se quer detectar e a aplicacao que saiu do
+// comportamento DELA, que e o sintoma de laco em integracao nova.
+//
+// Os dois canais entram na mesma contagem (UNION ALL) porque o abuso que
+// isto existe para pegar -- um laco -- nao escolhe canal, e uma aplicacao
+// que dobrasse o trafego trocando de canal passaria por duas contagens
+// separadas sem disparar nenhuma.
+//
+// Uma varredura, dois numeros: na_janela sai de um FILTER sobre as mesmas
+// linhas ja lidas para na_base. Duas consultas leriam a janela recente
+// duas vezes, e com relogios que podem diferir entre elas.
+//
+// Mensagem de ENTRADA fica fora: aplicacao_id e nulo nela (migration
+// 00023), e o que ela mede e o lead escrevendo, nao a aplicacao.
+func (q *Queries) MedirVolumePorAplicacao(ctx context.Context, arg MedirVolumePorAplicacaoParams) ([]MedirVolumePorAplicacaoRow, error) {
+	rows, err := q.db.Query(ctx, medirVolumePorAplicacao, arg.JanelaSegundos, arg.BaseSegundos)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []MedirVolumePorAplicacaoRow
+	for rows.Next() {
+		var i MedirVolumePorAplicacaoRow
+		if err := rows.Scan(
+			&i.AplicacaoID,
+			&i.Codigo,
+			&i.NaJanela,
+			&i.NaBase,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const registrarAlerta = `-- name: RegistrarAlerta :exec
-INSERT INTO alerta (tipo, detalhe) VALUES ($1, $2)
+INSERT INTO alerta (tipo, detalhe, aplicacao_id) VALUES ($1, $2, $3)
 `
 
 type RegistrarAlertaParams struct {
-	Tipo    string  `json:"tipo"`
-	Detalhe *string `json:"detalhe"`
+	Tipo        string  `json:"tipo"`
+	Detalhe     *string `json:"detalhe"`
+	AplicacaoID *int64  `json:"aplicacao_id"`
 }
 
 func (q *Queries) RegistrarAlerta(ctx context.Context, arg RegistrarAlertaParams) error {
-	_, err := q.db.Exec(ctx, registrarAlerta, arg.Tipo, arg.Detalhe)
+	_, err := q.db.Exec(ctx, registrarAlerta, arg.Tipo, arg.Detalhe, arg.AplicacaoID)
 	return err
 }

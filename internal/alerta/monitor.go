@@ -19,9 +19,20 @@ import (
 
 const TipoVolumeAnormal = "volume_anormal"
 
+// TipoVolumeAnormalAplicacao e o alerta da fase 9 do barramento: uma
+// aplicacao saiu do comportamento DELA.
+//
+// Tipo proprio, e nao o mesmo TipoVolumeAnormal com aplicacao_id
+// preenchido: os dois medem coisas diferentes. Aquele mede risco de
+// banimento do numero (destinatarios distintos no WhatsApp, compartilhado
+// pela empresa); este mede uma integracao em laco. Um tipo unico faria o
+// supervisor ler as duas coisas na mesma fila sem saber qual agir.
+const TipoVolumeAnormalAplicacao = "volume_anormal_aplicacao"
+
 // Repositorio e o subconjunto de store.Queries que o monitor precisa.
 type Repositorio interface {
 	ContarDestinatariosDistintosNaJanela(ctx context.Context, janelaSegundos float64) (int64, error)
+	MedirVolumePorAplicacao(ctx context.Context, arg store.MedirVolumePorAplicacaoParams) ([]store.MedirVolumePorAplicacaoRow, error)
 	BuscarAlertaRecente(ctx context.Context, arg store.BuscarAlertaRecenteParams) (store.Alertum, error)
 	RegistrarAlerta(ctx context.Context, arg store.RegistrarAlertaParams) error
 }
@@ -35,6 +46,23 @@ type Config struct {
 	// Sem valor fechado no plano -- default conservador, ajustavel sem
 	// redeploy no futuro se isso passar a ler de `parametro` tambem.
 	LimiteDestinatarios int64
+
+	// Os tres campos abaixo governam o alerta por aplicacao (fase 9 do
+	// barramento).
+
+	// JanelaBase e o periodo de onde sai a media de comparacao. 24h por
+	// default: pega o ciclo de um dia inteiro, entao a manha nao e
+	// comparada so com a madrugada.
+	JanelaBase time.Duration
+	// FatorSobreMedia e o "N x a media" do plano.
+	FatorSobreMedia float64
+	// MinimoParaAlertar e o piso absoluto de mensagens na janela.
+	//
+	// Sem ele o alerta e inutil e barulhento ao mesmo tempo: uma aplicacao
+	// que manda 2 mensagens por hora tem media ~0,08 por janela de 30min,
+	// entao UMA mensagem ja e mais de 4x a media. O piso e o que
+	// distingue "trafego baixo" de "laco".
+	MinimoParaAlertar int64
 }
 
 func (c Config) comDefaults() Config {
@@ -46,6 +74,22 @@ func (c Config) comDefaults() Config {
 	}
 	if c.LimiteDestinatarios <= 0 {
 		c.LimiteDestinatarios = 30
+	}
+	if c.JanelaBase <= 0 {
+		c.JanelaBase = 24 * time.Hour
+	}
+	if c.FatorSobreMedia <= 0 {
+		c.FatorSobreMedia = 4
+	}
+	if c.MinimoParaAlertar <= 0 {
+		c.MinimoParaAlertar = 50
+	}
+	// base menor que a janela tornaria a media um numero sem sentido (a
+	// propria janela dividida por menos de 1). Nao e configuracao
+	// invalida a ponto de recusar a subida -- e so um ajuste de quem
+	// mexeu em um dos dois e esqueceu do outro.
+	if c.JanelaBase < c.Janela {
+		c.JanelaBase = c.Janela
 	}
 	return c
 }
@@ -69,6 +113,7 @@ func (m *Monitor) Executar(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			m.verificar(ctx)
+			m.verificarPorAplicacao(ctx)
 		}
 	}
 }
