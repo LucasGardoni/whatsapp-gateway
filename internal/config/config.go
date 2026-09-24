@@ -95,6 +95,14 @@ type Config struct {
 	// Todas as instancias atras do mesmo proxy precisam do MESMO valor,
 	// senao o token emitido por uma nao abre conexao na outra.
 	SSESigningKey string
+
+	// CaixaCodigo e o codigo constante da unica caixa de WhatsApp que
+	// existe hoje (G2/G3 do barramento -- ver
+	// docs/PLANO_MULTICAIXA_E_CONVERSAS.md). Multi-caixa de verdade (G1)
+	// ainda nao foi construido: enquanto so houver uma, GET /v1/conversas
+	// devolve este valor no campo `caixa` de cada conversa, e valida
+	// contra ele quando o chamador manda o parametro `caixa` na query.
+	CaixaCodigo string
 }
 
 // tamanhoMinimoChaveSSE em bytes -- 32 caracteres cobrem com folga os 256
@@ -131,6 +139,8 @@ func Load() (*Config, error) {
 		LimiteConteudoCifradoBytes: getInt("LIMITE_CONTEUDO_CIFRADO_BYTES", mensagem.TamanhoMaximoConteudoCifradoPadrao),
 
 		SSESigningKey: os.Getenv("SSE_SIGNING_KEY"),
+
+		CaixaCodigo: getEnv("CAIXA_CODIGO", "rod_lider"),
 	}
 
 	if cfg.DatabaseURL == "" {

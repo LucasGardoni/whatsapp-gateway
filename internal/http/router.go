@@ -42,6 +42,7 @@ func NovoRouter(
 	zapiAdmin *handler.ZAPIAdmin,
 	leads *handler.Leads,
 	canais *handler.Canais,
+	conversas *handler.ConversasV1,
 	metricas *handler.Metricas,
 	// autenticadorApp e a identidade por aplicacao (barramento, fase 1).
 	// Desde a fase 8 ele e a UNICA autenticacao de servico que existe: o
@@ -150,6 +151,10 @@ func NovoRouter(
 			r.Delete("/api/zapi/fila/{id}", zapiAdmin.LimparItemFila)
 			r.Get("/api/zapi/qrcode", zapiAdmin.QRCode)
 
+			// token efemero da sdk de chamadas (@z-api/call). O browser nunca
+			// chama aqui: a aplicacao pede, confere o usuario e repassa.
+			r.Post("/api/zapi/chamadas/token", zapiAdmin.TokenChamada)
+
 			// job de reenvio e upload de csv (fase 11) -- dono e o
 			// supervisor, a tela que aciona e 100% CRM (ver plano, secao
 			// "Fase 11").
@@ -202,6 +207,13 @@ func NovoRouter(
 			// historico do canal (secao 6.3) -- devolve o ciphertext; quem
 			// decide quem pode ler e a aplicacao, antes de chamar.
 			r.Get("/v1/canais/{canal_externo}/mensagens", mensagensV1.Historico)
+
+			// G2/G3 (docs/PLANO_MULTICAIXA_E_CONVERSAS.md): leitura de
+			// conversa e mensagem de WhatsApp que o gateway mesmo gravou.
+			// Sem elas o CRM que consome o barramento nao tinha como saber
+			// o conversa_id que POST /v1/mensagens exige.
+			r.Get("/v1/conversas", conversas.Listar)
+			r.Get("/v1/conversas/{id}/mensagens", conversas.Mensagens)
 		})
 	}
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -384,4 +385,73 @@ func (c *Cliente) corpoOuErro(req *http.Request, contexto string) ([]byte, error
 		return nil, fmt.Errorf("%s: status %d da z-api: %s", contexto, resp.StatusCode, corpo)
 	}
 	return corpo, nil
+}
+
+type respostaTokenChamada struct {
+	Token string `json:"token"`
+}
+
+// TokenChamada gera o token efemero da SDK de chamadas (@z-api/call). O
+// browser conecta direto em wss://call.z-api.io com ele, entao o token e a
+// unica coisa da instancia que pode sair daqui -- instanceToken e
+// clientToken nunca. Uso unico: a SDK pede outro a cada reconexao.
+//
+// O README da SDK documenta GET e a pagina da API documenta POST; tenta
+// GET e cai para POST so no 405, para nao depender de qual das duas a
+// z-api corrigir primeiro.
+func (c *Cliente) TokenChamada(ctx context.Context) (string, error) {
+	corpo, err := c.pedirTokenChamada(ctx, http.MethodGet)
+	if errors.Is(err, errMetodoNaoPermitido) {
+		corpo, err = c.pedirTokenChamada(ctx, http.MethodPost)
+	}
+	if err != nil {
+		return "", err
+	}
+
+	var resposta respostaTokenChamada
+	if err := json.Unmarshal(corpo, &resposta); err != nil {
+		return "", fmt.Errorf("token de chamada: resposta invalida: %w", err)
+	}
+	if resposta.Token == "" {
+		return "", fmt.Errorf("token de chamada: z-api respondeu sem token: %s", corpo)
+	}
+	return resposta.Token, nil
+}
+
+// InstanceID e publico para a SDK de chamadas, que precisa dele no browser
+// junto com o token efemero. Nao e credencial: sem instanceToken nao
+// autentica nada.
+func (c *Cliente) InstanceID() string {
+	return c.instanceID
+}
+
+var errMetodoNaoPermitido = errors.New("metodo nao permitido")
+
+func (c *Cliente) pedirTokenChamada(ctx context.Context, metodo string) ([]byte, error) {
+	var corpo io.Reader
+	if metodo == http.MethodPost {
+		corpo = strings.NewReader("{}")
+	}
+	req, err := c.novaRequisicao(ctx, metodo, "call-token", corpo)
+	if err != nil {
+		return nil, fmt.Errorf("token de chamada: %w", err)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("token de chamada: %w", err)
+	}
+	defer resp.Body.Close()
+
+	lido, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("token de chamada: ler resposta: %w", err)
+	}
+	if resp.StatusCode == http.StatusMethodNotAllowed {
+		return nil, errMetodoNaoPermitido
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("token de chamada: status %d da z-api: %s", resp.StatusCode, lido)
+	}
+	return lido, nil
 }

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
 
@@ -82,4 +83,27 @@ func (h *ZAPIAdmin) QRCode(w http.ResponseWriter, r *http.Request) {
 	// morta e o supervisor tentaria escanear um codigo invalido.
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(resultado.ImagemPNG)
+}
+
+type respostaTokenChamada struct {
+	Token      string `json:"token"`
+	InstanceID string `json:"instance_id"`
+}
+
+// TokenChamada entrega a aplicacao o token efemero da SDK de chamadas da
+// z-api. A aplicacao repassa ao browser depois de conferir quem pode
+// ligar -- o gateway nao sabe de usuario nem de horario de departamento.
+// POST porque cada chamada cria um token novo na z-api.
+func (h *ZAPIAdmin) TokenChamada(w http.ResponseWriter, r *http.Request) {
+	token, err := h.cliente.TokenChamada(r.Context())
+	if err != nil {
+		slog.Error("zapi admin: gerar token de chamada", "erro", err)
+		http.Error(w, "erro ao gerar token de chamada", http.StatusBadGateway)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	// token de uso unico: cache devolveria um token ja consumido.
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(respostaTokenChamada{Token: token, InstanceID: h.cliente.InstanceID()})
 }
