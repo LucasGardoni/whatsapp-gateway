@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/LucasGardoni/whatsapp-gateway/internal/eventos"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/http/middleware"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/mensagem"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/metrica"
@@ -54,6 +55,16 @@ func NovoMensagensV1(pool *pgxpool.Pool, midiaDir string, limiteConteudoCifrado 
 		},
 		registro: registro,
 	}
+}
+
+// ComEventosWhatsApp liga a entrega por caixa (G8) nos eventos das
+// mensagens enviadas pelo canal WhatsApp.
+func (h *MensagensV1) ComEventosWhatsApp(ev eventos.WhatsApp) *MensagensV1 {
+	if e, ok := h.entregadores[mensagem.CanalWhatsApp].(entregadorWhatsApp); ok {
+		e.eventos = ev
+		h.entregadores[mensagem.CanalWhatsApp] = e
+	}
+	return h
 }
 
 // limiteHistoricoPadrao e limiteHistoricoMaximo paginam o historico. Sem

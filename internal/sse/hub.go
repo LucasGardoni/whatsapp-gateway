@@ -40,6 +40,9 @@ type Evento struct {
 	// o id interno: a aplicacao nao conhece, e nao deve precisar conhecer,
 	// a chave primaria de `canal` aqui dentro.
 	CanalExterno string `json:"canal_externo,omitempty"`
+	// Caixa e o codigo da caixa de WhatsApp do evento (G7). Vem em todo
+	// evento de WhatsApp; o canal interno nao tem caixa.
+	Caixa string `json:"caixa,omitempty"`
 }
 
 const (

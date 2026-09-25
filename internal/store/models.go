@@ -28,6 +28,19 @@ type Aplicacao struct {
 	PodeLerMetricas            bool             `json:"pode_ler_metricas"`
 }
 
+type Caixa struct {
+	ID             int64            `json:"id"`
+	Codigo         string           `json:"codigo"`
+	Nome           string           `json:"nome"`
+	Provedor       string           `json:"provedor"`
+	InstanciaID    *string          `json:"instancia_id"`
+	InstanciaToken *string          `json:"instancia_token"`
+	ClientToken    *string          `json:"client_token"`
+	WebhookSegredo string           `json:"webhook_segredo"`
+	Ativo          bool             `json:"ativo"`
+	CriadoEm       pgtype.Timestamp `json:"criado_em"`
+}
+
 type Canal struct {
 	ID           int64            `json:"id"`
 	AplicacaoID  int64            `json:"aplicacao_id"`
@@ -63,6 +76,14 @@ type Conversa struct {
 	CorretorID *int64           `json:"corretor_id"`
 	AbertaEm   pgtype.Timestamp `json:"aberta_em"`
 	FechadaEm  pgtype.Timestamp `json:"fechada_em"`
+	CaixaID    int64            `json:"caixa_id"`
+}
+
+type ConversaLeitura struct {
+	AplicacaoID  int64            `json:"aplicacao_id"`
+	ConversaID   int64            `json:"conversa_id"`
+	UltimaLidaID int64            `json:"ultima_lida_id"`
+	AtualizadoEm pgtype.Timestamp `json:"atualizado_em"`
 }
 
 type Disparo struct {
@@ -197,6 +218,7 @@ type ProvedorSaude struct {
 	VerificadoEm pgtype.Timestamp `json:"verificado_em"`
 	LatenciaMs   *int32           `json:"latencia_ms"`
 	UltimoErro   *string          `json:"ultimo_erro"`
+	CaixaID      *int64           `json:"caixa_id"`
 }
 
 type PushSubscription struct {

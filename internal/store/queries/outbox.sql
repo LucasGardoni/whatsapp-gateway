@@ -1,12 +1,17 @@
 -- name: SelecionarPendentesParaEnvio :many
 -- outbox: a fila e a propria tabela mensagem filtrada por status (secao 7).
 -- FOR UPDATE SKIP LOCKED evita que dois workers peguem a mesma mensagem.
+--
+-- Uma caixa por vez (G1): o worker so seleciona o que vai mandar pelo
+-- provedor que tem na mao, e caixa desconectada nem entra no ciclo.
 WITH selecionadas AS (
-    SELECT id FROM mensagem
-    WHERE status = 'pendente' AND direcao = 'saida' AND tentar_em <= LOCALTIMESTAMP
-    ORDER BY criado_em
-    FOR UPDATE SKIP LOCKED
-    LIMIT $1
+    SELECT m.id FROM mensagem m
+    JOIN conversa c ON c.id = m.conversa_id
+    WHERE m.status = 'pendente' AND m.direcao = 'saida' AND m.tentar_em <= LOCALTIMESTAMP
+      AND c.caixa_id = sqlc.arg(caixa_id)
+    ORDER BY m.criado_em
+    FOR UPDATE OF m SKIP LOCKED
+    LIMIT sqlc.arg(limite)
 ), atualizadas AS (
     UPDATE mensagem m
     SET status = 'enviando'

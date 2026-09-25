@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/LucasGardoni/whatsapp-gateway/internal/caixa"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/dlp"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/eventos"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
@@ -24,7 +25,7 @@ import (
 // Fila e o subconjunto de store.Queries que o outbox precisa. Definido
 // aqui para testar a orquestracao sem depender de Postgres real.
 type Fila interface {
-	SelecionarPendentesParaEnvio(ctx context.Context, limite int32) ([]store.SelecionarPendentesParaEnvioRow, error)
+	SelecionarPendentesParaEnvio(ctx context.Context, arg store.SelecionarPendentesParaEnvioParams) ([]store.SelecionarPendentesParaEnvioRow, error)
 	MarcarMensagemEnviada(ctx context.Context, arg store.MarcarMensagemEnviadaParams) error
 	MarcarMensagemParaRetentativa(ctx context.Context, arg store.MarcarMensagemParaRetentativaParams) error
 	MarcarMensagemFalhaDefinitiva(ctx context.Context, arg store.MarcarMensagemFalhaDefinitivaParams) error
@@ -48,6 +49,8 @@ type Config struct {
 	// Vazio cai no default "./dados/midia", igual ao config.MidiaDir --
 	// nunca vira "leia de qualquer lugar do disco".
 	MidiaDir string
+	// EventosWhatsApp entrega os eventos de status tambem por caixa (G8).
+	EventosWhatsApp eventos.WhatsApp
 }
 
 func (c Config) comDefaults() Config {
@@ -69,15 +72,19 @@ func (c Config) comDefaults() Config {
 	return c
 }
 
+// Worker drena a fila de cada caixa pelo provedor DELA (G1). Nao existe
+// mais provedor do processo: uma mensagem so e selecionada junto com o
+// provedor que vai manda-la, entao nao ha caminho em que a mensagem de uma
+// caixa saia pelo numero de outra.
 type Worker struct {
-	fila     Fila
-	provedor provedor.Provedor
-	dlp      *dlp.Motor
-	cfg      Config
+	fila   Fila
+	caixas caixa.ComProvedores
+	dlp    *dlp.Motor
+	cfg    Config
 }
 
-func NovoWorker(fila Fila, p provedor.Provedor, motor *dlp.Motor, cfg Config) *Worker {
-	return &Worker{fila: fila, provedor: p, dlp: motor, cfg: cfg.comDefaults()}
+func NovoWorker(fila Fila, caixas caixa.ComProvedores, motor *dlp.Motor, cfg Config) *Worker {
+	return &Worker{fila: fila, caixas: caixas, dlp: motor, cfg: cfg.comDefaults()}
 }
 
 // Executar reseta mensagens presas de um restart anterior e entao roda um
@@ -110,34 +117,61 @@ func (w *Worker) Executar(ctx context.Context) error {
 	}
 }
 
+// rodarCiclo passa por cada caixa ativa. Caixa desconectada, ou cujo status
+// nao responde, fica para o proximo ciclo sem segurar as outras: um numero
+// banido nao pode parar a fila de outro.
 func (w *Worker) rodarCiclo(ctx context.Context) error {
-	status, err := w.provedor.Status(ctx)
+	caixas, err := w.caixas.Ativas(ctx)
 	if err != nil {
-		slog.Warn("outbox: nao foi possivel consultar status do provedor, aguardando proximo ciclo", "erro", err)
+		return fmt.Errorf("outbox: listar caixas: %w", err)
+	}
+
+	var falhas []error
+	for _, c := range caixas {
+		if err := w.rodarCaixa(ctx, c); err != nil {
+			falhas = append(falhas, err)
+		}
+	}
+	return errors.Join(falhas...)
+}
+
+func (w *Worker) rodarCaixa(ctx context.Context, c caixa.Caixa) error {
+	p := w.caixas.Provedor(c)
+	if p == nil {
+		slog.Error("outbox: caixa sem provedor, fila parada", "caixa", c.Codigo)
+		return nil
+	}
+
+	status, err := p.Status(ctx)
+	if err != nil {
+		slog.Warn("outbox: nao foi possivel consultar status do provedor, aguardando proximo ciclo", "caixa", c.Codigo, "erro", err)
 		return nil
 	}
 	if !status.Conectada {
 		// nao empurra para a fila da propria z-api (secao 4.7) -- so espera.
-		slog.Warn("outbox: instancia desconectada, nao tenta enviar neste ciclo")
+		slog.Warn("outbox: instancia desconectada, nao tenta enviar neste ciclo", "caixa", c.Codigo)
 		return nil
 	}
 
-	mensagens, err := w.fila.SelecionarPendentesParaEnvio(ctx, w.cfg.TamanhoLote)
+	mensagens, err := w.fila.SelecionarPendentesParaEnvio(ctx, store.SelecionarPendentesParaEnvioParams{
+		CaixaID: c.ID,
+		Limite:  w.cfg.TamanhoLote,
+	})
 	if err != nil {
-		return fmt.Errorf("outbox: selecionar pendentes: %w", err)
+		return fmt.Errorf("outbox: selecionar pendentes da caixa %s: %w", c.Codigo, err)
 	}
 
 	for _, m := range mensagens {
-		w.processarMensagem(ctx, m)
+		w.processarMensagem(ctx, c, p, m)
 	}
 	return nil
 }
 
-func (w *Worker) processarMensagem(ctx context.Context, m store.SelecionarPendentesParaEnvioRow) {
+func (w *Worker) processarMensagem(ctx context.Context, c caixa.Caixa, p provedor.Provedor, m store.SelecionarPendentesParaEnvioRow) {
 	destino, err := destinatario(m)
 	if err != nil {
 		slog.Error("outbox: mensagem sem destinatario valido, falha definitiva", "mensagem_id", m.ID, "erro", err)
-		w.marcarFalhaDefinitiva(ctx, m, err)
+		w.marcarFalhaDefinitiva(ctx, c, m, err)
 		return
 	}
 
@@ -154,7 +188,7 @@ func (w *Worker) processarMensagem(ctx context.Context, m store.SelecionarPenden
 		w.registrarOcorrenciasDLP(ctx, m.ID, veredito)
 		if veredito.Bloqueado() {
 			slog.Warn("outbox: mensagem bloqueada pelo dlp", "mensagem_id", m.ID)
-			w.marcarBloqueada(ctx, m)
+			w.marcarBloqueada(ctx, c, m)
 			return
 		}
 	}
@@ -162,14 +196,14 @@ func (w *Worker) processarMensagem(ctx context.Context, m store.SelecionarPenden
 	// erro de validacao (conteudo ausente, arquivo ilegivel): falha direto,
 	// sem passar por tratarErroEnvio -- retentar nao muda nada aqui, o
 	// mesmo tratamento que o destinatario invalido ja recebe acima.
-	resultado, err, valido := w.enviar(ctx, m, destino, legenda)
+	resultado, err, valido := w.enviar(ctx, p, m, destino, legenda)
 	if !valido {
 		slog.Error("outbox: mensagem invalida para envio, falha definitiva", "mensagem_id", m.ID, "erro", err)
-		w.marcarFalhaDefinitiva(ctx, m, err)
+		w.marcarFalhaDefinitiva(ctx, c, m, err)
 		return
 	}
 	if err != nil {
-		w.tratarErroEnvio(ctx, m, err)
+		w.tratarErroEnvio(ctx, c, m, err)
 		return
 	}
 
@@ -181,19 +215,19 @@ func (w *Worker) processarMensagem(ctx context.Context, m store.SelecionarPenden
 		slog.Error("outbox: falha ao marcar mensagem como enviada", "mensagem_id", m.ID, "erro", err)
 		return
 	}
-	w.publicar(ctx, m, "enviada")
+	w.publicar(ctx, c, m, "enviada")
 }
 
 // enviar despacha para o endpoint certo conforme o tipo da mensagem.
 // valido=false significa que o problema e da propria mensagem (conteudo
 // ausente, arquivo ilegivel) e nunca vai se resolver com retentativa --
 // dessa forma o chamador sabe falhar direto em vez de reagendar.
-func (w *Worker) enviar(ctx context.Context, m store.SelecionarPendentesParaEnvioRow, destino, legenda string) (resultado *provedor.ResultadoEnvio, err error, valido bool) {
+func (w *Worker) enviar(ctx context.Context, p provedor.Provedor, m store.SelecionarPendentesParaEnvioRow, destino, legenda string) (resultado *provedor.ResultadoEnvio, err error, valido bool) {
 	if m.Tipo == "texto" {
 		if legenda == "" {
 			return nil, fmt.Errorf("mensagem %d: tipo texto sem conteudo", m.ID), false
 		}
-		resultado, err = w.provedor.Enviar(ctx, provedor.MensagemTexto{Destinatario: destino, Texto: legenda})
+		resultado, err = p.Enviar(ctx, provedor.MensagemTexto{Destinatario: destino, Texto: legenda})
 		return resultado, err, true
 	}
 
@@ -211,7 +245,7 @@ func (w *Worker) enviar(ctx context.Context, m store.SelecionarPendentesParaEnvi
 		return nil, err, false
 	}
 
-	resultado, err = w.provedor.EnviarMidia(ctx, provedor.MensagemMidia{
+	resultado, err = p.EnviarMidia(ctx, provedor.MensagemMidia{
 		Destinatario:   destino,
 		Tipo:           m.Tipo,
 		ConteudoBase64: conteudo,
@@ -221,7 +255,7 @@ func (w *Worker) enviar(ctx context.Context, m store.SelecionarPendentesParaEnvi
 	return resultado, err, true
 }
 
-func (w *Worker) tratarErroEnvio(ctx context.Context, m store.SelecionarPendentesParaEnvioRow, err error) {
+func (w *Worker) tratarErroEnvio(ctx context.Context, c caixa.Caixa, m store.SelecionarPendentesParaEnvioRow, err error) {
 	retentavel := true // erro nao classificado: mais seguro reenfileirar do que descartar
 	var classificado provedor.ErroClassificado
 	if errors.As(err, &classificado) {
@@ -230,8 +264,8 @@ func (w *Worker) tratarErroEnvio(ctx context.Context, m store.SelecionarPendente
 
 	tentativasApos := int(m.Tentativas) + 1
 	if !retentavel || tentativasApos >= w.cfg.MaxTentativas {
-		slog.Error("outbox: falha definitiva no envio", "mensagem_id", m.ID, "tentativas", tentativasApos, "erro", err)
-		w.marcarFalhaDefinitiva(ctx, m, err)
+		slog.Error("outbox: falha definitiva no envio", "caixa", c.Codigo, "mensagem_id", m.ID, "tentativas", tentativasApos, "erro", err)
+		w.marcarFalhaDefinitiva(ctx, c, m, err)
 		return
 	}
 
@@ -246,7 +280,7 @@ func (w *Worker) tratarErroEnvio(ctx context.Context, m store.SelecionarPendente
 	}
 }
 
-func (w *Worker) marcarFalhaDefinitiva(ctx context.Context, m store.SelecionarPendentesParaEnvioRow, causa error) {
+func (w *Worker) marcarFalhaDefinitiva(ctx context.Context, c caixa.Caixa, m store.SelecionarPendentesParaEnvioRow, causa error) {
 	if err := w.fila.MarcarMensagemFalhaDefinitiva(ctx, store.MarcarMensagemFalhaDefinitivaParams{
 		ID:         m.ID,
 		UltimoErro: naoVazio(motivoErro(causa)),
@@ -254,7 +288,7 @@ func (w *Worker) marcarFalhaDefinitiva(ctx context.Context, m store.SelecionarPe
 		slog.Error("outbox: falha ao marcar falha definitiva", "mensagem_id", m.ID, "erro", err)
 		return
 	}
-	w.publicar(ctx, m, "falha")
+	w.publicar(ctx, c, m, "falha")
 }
 
 // motivoErro limita o tamanho gravado em mensagem.ultimo_erro -- o texto
@@ -269,12 +303,12 @@ func motivoErro(err error) string {
 	return msg
 }
 
-func (w *Worker) marcarBloqueada(ctx context.Context, m store.SelecionarPendentesParaEnvioRow) {
+func (w *Worker) marcarBloqueada(ctx context.Context, c caixa.Caixa, m store.SelecionarPendentesParaEnvioRow) {
 	if err := w.fila.MarcarMensagemBloqueada(ctx, m.ID); err != nil {
 		slog.Error("outbox: falha ao marcar mensagem bloqueada", "mensagem_id", m.ID, "erro", err)
 		return
 	}
-	w.publicar(ctx, m, "bloqueada")
+	w.publicar(ctx, c, m, "bloqueada")
 }
 
 // publicar registra a mudanca de status para o tempo real. Retentativa
@@ -284,8 +318,8 @@ func (w *Worker) marcarBloqueada(ctx context.Context, m store.SelecionarPendente
 // Desde a fase 7 isto grava em `evento` em vez de publicar no hub local:
 // o corretor pode estar com o EventSource aberto em outra instancia, e
 // era exatamente esse o teto que a fase derruba.
-func (w *Worker) publicar(ctx context.Context, m store.SelecionarPendentesParaEnvioRow, status string) {
-	if err := eventos.RegistrarParaCorretorCRM(ctx, w.fila, m.CorretorID, sse.Evento{
+func (w *Worker) publicar(ctx context.Context, c caixa.Caixa, m store.SelecionarPendentesParaEnvioRow, status string) {
+	if err := w.cfg.EventosWhatsApp.Registrar(ctx, w.fila, c.Codigo, m.CorretorID, sse.Evento{
 		Tipo:       sse.EventoMensagemStatus,
 		MensagemID: m.ID,
 		ConversaID: m.ConversaID,

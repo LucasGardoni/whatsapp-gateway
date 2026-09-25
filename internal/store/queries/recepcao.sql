@@ -54,10 +54,13 @@ WHERE lead.id = sqlc.arg(id)
   AND NOT EXISTS (SELECT 1 FROM lead outro WHERE outro.chat_lid = sqlc.arg(chat_lid));
 
 -- name: BuscarConversaAbertaPorLead :one
-SELECT * FROM conversa WHERE lead_id = $1 AND fechada_em IS NULL ORDER BY aberta_em DESC LIMIT 1;
+-- por caixa (G1): o mesmo contato tem uma conversa em cada numero.
+SELECT * FROM conversa
+ WHERE lead_id = sqlc.arg(lead_id) AND caixa_id = sqlc.arg(caixa_id) AND fechada_em IS NULL
+ ORDER BY aberta_em DESC LIMIT 1;
 
 -- name: CriarConversa :one
-INSERT INTO conversa (lead_id) VALUES ($1) RETURNING *;
+INSERT INTO conversa (lead_id, caixa_id) VALUES (sqlc.arg(lead_id), sqlc.arg(caixa_id)) RETURNING *;
 
 -- name: InserirMensagemEntrada :one
 -- ON CONFLICT casa com o indice unico parcial mensagem_provedor_msg_id_idx
@@ -80,11 +83,15 @@ RETURNING id;
 -- (nao verdadeiro), entao isto tambem protege os estados terminais de
 -- graca: mensagem em 'falha' ou 'bloqueada' nao volta para o fluxo de
 -- entrega por causa de um callback atrasado.
+--
+-- caixa_id e a do webhook que recebeu o callback (G1): o segredo de uma
+-- caixa nao mexe em mensagem de outra.
 UPDATE mensagem m
 SET status = sqlc.arg(status)
 FROM conversa c
 WHERE m.provedor_msg_id = sqlc.arg(provedor_msg_id)
   AND c.id = m.conversa_id
+  AND c.caixa_id = sqlc.arg(caixa_id)
   AND array_position(ARRAY['pendente', 'enviando', 'enviada', 'entregue', 'lida'], sqlc.arg(status))
     > array_position(ARRAY['pendente', 'enviando', 'enviada', 'entregue', 'lida'], m.status)
 RETURNING m.id, m.conversa_id, c.corretor_id, m.status;
@@ -105,12 +112,13 @@ SET status = 'falha', ultimo_erro = sqlc.arg(ultimo_erro)
 FROM conversa c
 WHERE m.provedor_msg_id = sqlc.arg(provedor_msg_id)
   AND c.id = m.conversa_id
+  AND c.caixa_id = sqlc.arg(caixa_id)
   AND m.status NOT IN ('entregue', 'lida', 'falha')
 RETURNING m.id, m.conversa_id, c.corretor_id, m.status;
 
 -- name: RegistrarSaudeProvedor :exec
-INSERT INTO provedor_saude (provedor, conectado, latencia_ms, ultimo_erro)
-VALUES ($1, $2, $3, $4);
+INSERT INTO provedor_saude (provedor, caixa_id, conectado, latencia_ms, ultimo_erro)
+VALUES (sqlc.arg(provedor), sqlc.narg(caixa_id), sqlc.arg(conectado), sqlc.narg(latencia_ms), sqlc.narg(ultimo_erro));
 
 -- name: DefinirAtribuicaoCampanhaDoLead :exec
 -- so preenche se ainda estiver vazio -- atribuicao e sobre a origem, a

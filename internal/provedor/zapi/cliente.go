@@ -455,3 +455,35 @@ func (c *Cliente) pedirTokenChamada(ctx context.Context, metodo string) ([]byte,
 	}
 	return lido, nil
 }
+
+// Contato e um item de GET /contacts da z-api (agenda do aparelho da
+// instancia). Os nomes vem de fontes diferentes: Name e o salvo na agenda,
+// Short o primeiro nome dele, Vname o nome verificado de conta comercial e
+// Notify o nome que o proprio contato pos no perfil.
+type Contato struct {
+	Phone  string `json:"phone"`
+	Name   string `json:"name"`
+	Short  string `json:"short"`
+	Vname  string `json:"vname"`
+	Notify string `json:"notify"`
+}
+
+// Contatos le uma pagina da agenda da instancia (G5). page comeca em 1.
+func (c *Cliente) Contatos(ctx context.Context, page, pageSize int) ([]Contato, error) {
+	caminho := fmt.Sprintf("contacts?page=%d&pageSize=%d", page, pageSize)
+	req, err := c.novaRequisicao(ctx, http.MethodGet, caminho, nil)
+	if err != nil {
+		return nil, fmt.Errorf("listar contatos: %w", err)
+	}
+	corpo, err := c.corpoOuErro(req, "listar contatos")
+	if err != nil {
+		return nil, err
+	}
+
+	// pagina alem da ultima vem como `null` ou `[]`; as duas sao "acabou".
+	var contatos []Contato
+	if err := json.Unmarshal(corpo, &contatos); err != nil {
+		return nil, fmt.Errorf("listar contatos: resposta nao reconhecida: %s", corpo)
+	}
+	return contatos, nil
+}

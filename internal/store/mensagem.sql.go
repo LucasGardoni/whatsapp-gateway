@@ -10,7 +10,7 @@ import (
 )
 
 const buscarConversaPorID = `-- name: BuscarConversaPorID :one
-SELECT id, lead_id, corretor_id, aberta_em, fechada_em FROM conversa WHERE id = $1
+SELECT id, lead_id, corretor_id, aberta_em, fechada_em, caixa_id FROM conversa WHERE id = $1
 `
 
 func (q *Queries) BuscarConversaPorID(ctx context.Context, id int64) (Conversa, error) {
@@ -22,6 +22,7 @@ func (q *Queries) BuscarConversaPorID(ctx context.Context, id int64) (Conversa, 
 		&i.CorretorID,
 		&i.AbertaEm,
 		&i.FechadaEm,
+		&i.CaixaID,
 	)
 	return i, err
 }

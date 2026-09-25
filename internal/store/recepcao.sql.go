@@ -29,6 +29,7 @@ SET status = $1
 FROM conversa c
 WHERE m.provedor_msg_id = $2
   AND c.id = m.conversa_id
+  AND c.caixa_id = $3
   AND array_position(ARRAY['pendente', 'enviando', 'enviada', 'entregue', 'lida'], $1)
     > array_position(ARRAY['pendente', 'enviando', 'enviada', 'entregue', 'lida'], m.status)
 RETURNING m.id, m.conversa_id, c.corretor_id, m.status
@@ -37,6 +38,7 @@ RETURNING m.id, m.conversa_id, c.corretor_id, m.status
 type AtualizarStatusMensagemPorProvedorMsgIDParams struct {
 	Status        string  `json:"status"`
 	ProvedorMsgID *string `json:"provedor_msg_id"`
+	CaixaID       int64   `json:"caixa_id"`
 }
 
 type AtualizarStatusMensagemPorProvedorMsgIDRow struct {
@@ -58,8 +60,11 @@ type AtualizarStatusMensagemPorProvedorMsgIDRow struct {
 // (nao verdadeiro), entao isto tambem protege os estados terminais de
 // graca: mensagem em 'falha' ou 'bloqueada' nao volta para o fluxo de
 // entrega por causa de um callback atrasado.
+//
+// caixa_id e a do webhook que recebeu o callback (G1): o segredo de uma
+// caixa nao mexe em mensagem de outra.
 func (q *Queries) AtualizarStatusMensagemPorProvedorMsgID(ctx context.Context, arg AtualizarStatusMensagemPorProvedorMsgIDParams) ([]AtualizarStatusMensagemPorProvedorMsgIDRow, error) {
-	rows, err := q.db.Query(ctx, atualizarStatusMensagemPorProvedorMsgID, arg.Status, arg.ProvedorMsgID)
+	rows, err := q.db.Query(ctx, atualizarStatusMensagemPorProvedorMsgID, arg.Status, arg.ProvedorMsgID, arg.CaixaID)
 	if err != nil {
 		return nil, err
 	}
@@ -115,11 +120,19 @@ func (q *Queries) BuscarCliqueRecentePorLead(ctx context.Context, arg BuscarCliq
 }
 
 const buscarConversaAbertaPorLead = `-- name: BuscarConversaAbertaPorLead :one
-SELECT id, lead_id, corretor_id, aberta_em, fechada_em FROM conversa WHERE lead_id = $1 AND fechada_em IS NULL ORDER BY aberta_em DESC LIMIT 1
+SELECT id, lead_id, corretor_id, aberta_em, fechada_em, caixa_id FROM conversa
+ WHERE lead_id = $1 AND caixa_id = $2 AND fechada_em IS NULL
+ ORDER BY aberta_em DESC LIMIT 1
 `
 
-func (q *Queries) BuscarConversaAbertaPorLead(ctx context.Context, leadID int64) (Conversa, error) {
-	row := q.db.QueryRow(ctx, buscarConversaAbertaPorLead, leadID)
+type BuscarConversaAbertaPorLeadParams struct {
+	LeadID  int64 `json:"lead_id"`
+	CaixaID int64 `json:"caixa_id"`
+}
+
+// por caixa (G1): o mesmo contato tem uma conversa em cada numero.
+func (q *Queries) BuscarConversaAbertaPorLead(ctx context.Context, arg BuscarConversaAbertaPorLeadParams) (Conversa, error) {
+	row := q.db.QueryRow(ctx, buscarConversaAbertaPorLead, arg.LeadID, arg.CaixaID)
 	var i Conversa
 	err := row.Scan(
 		&i.ID,
@@ -127,6 +140,7 @@ func (q *Queries) BuscarConversaAbertaPorLead(ctx context.Context, leadID int64)
 		&i.CorretorID,
 		&i.AbertaEm,
 		&i.FechadaEm,
+		&i.CaixaID,
 	)
 	return i, err
 }
@@ -238,11 +252,16 @@ func (q *Queries) BuscarLeadPorTokenNoTexto(ctx context.Context, texto string) (
 }
 
 const criarConversa = `-- name: CriarConversa :one
-INSERT INTO conversa (lead_id) VALUES ($1) RETURNING id, lead_id, corretor_id, aberta_em, fechada_em
+INSERT INTO conversa (lead_id, caixa_id) VALUES ($1, $2) RETURNING id, lead_id, corretor_id, aberta_em, fechada_em, caixa_id
 `
 
-func (q *Queries) CriarConversa(ctx context.Context, leadID int64) (Conversa, error) {
-	row := q.db.QueryRow(ctx, criarConversa, leadID)
+type CriarConversaParams struct {
+	LeadID  int64 `json:"lead_id"`
+	CaixaID int64 `json:"caixa_id"`
+}
+
+func (q *Queries) CriarConversa(ctx context.Context, arg CriarConversaParams) (Conversa, error) {
+	row := q.db.QueryRow(ctx, criarConversa, arg.LeadID, arg.CaixaID)
 	var i Conversa
 	err := row.Scan(
 		&i.ID,
@@ -250,6 +269,7 @@ func (q *Queries) CriarConversa(ctx context.Context, leadID int64) (Conversa, er
 		&i.CorretorID,
 		&i.AbertaEm,
 		&i.FechadaEm,
+		&i.CaixaID,
 	)
 	return i, err
 }
@@ -381,6 +401,7 @@ SET status = 'falha', ultimo_erro = $1
 FROM conversa c
 WHERE m.provedor_msg_id = $2
   AND c.id = m.conversa_id
+  AND c.caixa_id = $3
   AND m.status NOT IN ('entregue', 'lida', 'falha')
 RETURNING m.id, m.conversa_id, c.corretor_id, m.status
 `
@@ -388,6 +409,7 @@ RETURNING m.id, m.conversa_id, c.corretor_id, m.status
 type MarcarFalhaDeEnvioPorProvedorMsgIDParams struct {
 	UltimoErro    *string `json:"ultimo_erro"`
 	ProvedorMsgID *string `json:"provedor_msg_id"`
+	CaixaID       int64   `json:"caixa_id"`
 }
 
 type MarcarFalhaDeEnvioPorProvedorMsgIDRow struct {
@@ -408,7 +430,7 @@ type MarcarFalhaDeEnvioPorProvedorMsgIDRow struct {
 //
 // RETURNING alimenta o evento SSE, igual a AtualizarStatusMensagemPorProvedorMsgID.
 func (q *Queries) MarcarFalhaDeEnvioPorProvedorMsgID(ctx context.Context, arg MarcarFalhaDeEnvioPorProvedorMsgIDParams) ([]MarcarFalhaDeEnvioPorProvedorMsgIDRow, error) {
-	rows, err := q.db.Query(ctx, marcarFalhaDeEnvioPorProvedorMsgID, arg.UltimoErro, arg.ProvedorMsgID)
+	rows, err := q.db.Query(ctx, marcarFalhaDeEnvioPorProvedorMsgID, arg.UltimoErro, arg.ProvedorMsgID, arg.CaixaID)
 	if err != nil {
 		return nil, err
 	}
@@ -457,12 +479,13 @@ func (q *Queries) PreencherChatLidSeVazio(ctx context.Context, arg PreencherChat
 }
 
 const registrarSaudeProvedor = `-- name: RegistrarSaudeProvedor :exec
-INSERT INTO provedor_saude (provedor, conectado, latencia_ms, ultimo_erro)
-VALUES ($1, $2, $3, $4)
+INSERT INTO provedor_saude (provedor, caixa_id, conectado, latencia_ms, ultimo_erro)
+VALUES ($1, $2, $3, $4, $5)
 `
 
 type RegistrarSaudeProvedorParams struct {
 	Provedor   string  `json:"provedor"`
+	CaixaID    *int64  `json:"caixa_id"`
 	Conectado  bool    `json:"conectado"`
 	LatenciaMs *int32  `json:"latencia_ms"`
 	UltimoErro *string `json:"ultimo_erro"`
@@ -471,6 +494,7 @@ type RegistrarSaudeProvedorParams struct {
 func (q *Queries) RegistrarSaudeProvedor(ctx context.Context, arg RegistrarSaudeProvedorParams) error {
 	_, err := q.db.Exec(ctx, registrarSaudeProvedor,
 		arg.Provedor,
+		arg.CaixaID,
 		arg.Conectado,
 		arg.LatenciaMs,
 		arg.UltimoErro,

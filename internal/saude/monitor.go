@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/caixa"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
 )
 
@@ -21,29 +21,26 @@ type Registrador interface {
 }
 
 type Config struct {
-	// NomeProvedor identifica a linha em provedor_saude (ex.: "zapi").
-	NomeProvedor string
-	Intervalo    time.Duration
+	Intervalo time.Duration
 }
 
 func (c Config) comDefaults() Config {
-	if c.NomeProvedor == "" {
-		c.NomeProvedor = "zapi"
-	}
 	if c.Intervalo <= 0 {
 		c.Intervalo = 30 * time.Second
 	}
 	return c
 }
 
+// Monitor consulta cada caixa ativa (G1): a linha de provedor_saude leva o
+// tipo do provedor e a caixa, para o painel dizer QUAL numero caiu.
 type Monitor struct {
-	provedor provedor.Provedor
+	caixas   caixa.ComProvedores
 	registro Registrador
 	cfg      Config
 }
 
-func NovoMonitor(p provedor.Provedor, r Registrador, cfg Config) *Monitor {
-	return &Monitor{provedor: p, registro: r, cfg: cfg.comDefaults()}
+func NovoMonitor(caixas caixa.ComProvedores, r Registrador, cfg Config) *Monitor {
+	return &Monitor{caixas: caixas, registro: r, cfg: cfg.comDefaults()}
 }
 
 // Executar consulta o status a cada tick ate o contexto ser cancelado.
@@ -66,16 +63,34 @@ func (m *Monitor) Executar(ctx context.Context) error {
 }
 
 func (m *Monitor) verificar(ctx context.Context) {
+	caixas, err := m.caixas.Ativas(ctx)
+	if err != nil {
+		slog.Error("saude: falha ao listar caixas", "erro", err)
+		return
+	}
+	for _, c := range caixas {
+		m.verificarCaixa(ctx, c)
+	}
+}
+
+func (m *Monitor) verificarCaixa(ctx context.Context, c caixa.Caixa) {
+	p := m.caixas.Provedor(c)
+	if p == nil {
+		return
+	}
+
 	inicio := time.Now()
-	status, err := m.provedor.Status(ctx)
+	status, err := p.Status(ctx)
 	latenciaMs := int32(time.Since(inicio).Milliseconds())
 
+	caixaID := c.ID
 	arg := store.RegistrarSaudeProvedorParams{
-		Provedor:   m.cfg.NomeProvedor,
+		Provedor:   c.Provedor,
+		CaixaID:    &caixaID,
 		LatenciaMs: &latenciaMs,
 	}
 	if err != nil {
-		slog.Warn("saude: falha ao consultar status do provedor", "provedor", m.cfg.NomeProvedor, "erro", err)
+		slog.Warn("saude: falha ao consultar status do provedor", "caixa", c.Codigo, "erro", err)
 		motivo := err.Error()
 		arg.Conectado = false
 		arg.UltimoErro = &motivo
@@ -87,6 +102,6 @@ func (m *Monitor) verificar(ctx context.Context) {
 	}
 
 	if err := m.registro.RegistrarSaudeProvedor(ctx, arg); err != nil {
-		slog.Error("saude: falha ao registrar saude do provedor", "provedor", m.cfg.NomeProvedor, "erro", err)
+		slog.Error("saude: falha ao registrar saude do provedor", "caixa", c.Codigo, "erro", err)
 	}
 }

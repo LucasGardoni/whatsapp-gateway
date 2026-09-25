@@ -13,9 +13,10 @@ import (
 
 const buscarConversaComContatoPorID = `-- name: BuscarConversaComContatoPorID :one
 
-SELECT c.id, c.aberta_em, c.fechada_em,
+SELECT c.id, c.aberta_em, c.fechada_em, cx.codigo AS caixa,
        l.nome AS contato_nome, l.telefone_e164 AS contato_telefone, l.chat_lid AS contato_chat_lid
   FROM conversa c
+  JOIN caixa cx ON cx.id = c.caixa_id
   JOIN lead l ON l.id = c.lead_id
  WHERE c.id = $1
 `
@@ -24,6 +25,7 @@ type BuscarConversaComContatoPorIDRow struct {
 	ID              int64            `json:"id"`
 	AbertaEm        pgtype.Timestamp `json:"aberta_em"`
 	FechadaEm       pgtype.Timestamp `json:"fechada_em"`
+	Caixa           string           `json:"caixa"`
 	ContatoNome     *string          `json:"contato_nome"`
 	ContatoTelefone *string          `json:"contato_telefone"`
 	ContatoChatLid  *string          `json:"contato_chat_lid"`
@@ -45,6 +47,7 @@ func (q *Queries) BuscarConversaComContatoPorID(ctx context.Context, id int64) (
 		&i.ID,
 		&i.AbertaEm,
 		&i.FechadaEm,
+		&i.Caixa,
 		&i.ContatoNome,
 		&i.ContatoTelefone,
 		&i.ContatoChatLid,
@@ -61,6 +64,7 @@ WITH ultima_por_conversa AS (
 )
 SELECT
     c.id,
+    cx.codigo AS caixa,
     c.aberta_em,
     c.fechada_em,
     l.nome AS contato_nome,
@@ -71,29 +75,46 @@ SELECT
     ultima.tipo AS ultima_mensagem_tipo,
     ultima.texto AS ultima_mensagem_texto,
     ultima.status AS ultima_mensagem_status,
-    COALESCE(ultima.criado_em, c.aberta_em) AS ultima_atividade
+    COALESCE(ultima.criado_em, c.aberta_em) AS ultima_atividade,
+    -- G6: entrada acima da ultima leitura DESTA aplicacao. Subquery escalar
+    -- aqui e segura para o sqlc porque count(*) nunca e NULL, e o Postgres
+    -- so a avalia para as linhas que sobram do LIMIT.
+    (SELECT count(*)
+       FROM mensagem mn
+      WHERE mn.conversa_id = c.id
+        AND mn.direcao = 'entrada'
+        AND mn.id > COALESCE((SELECT cl.ultima_lida_id
+                                FROM conversa_leitura cl
+                               WHERE cl.conversa_id = c.id
+                                 AND cl.aplicacao_id = $1::bigint), 0)
+    )::int AS nao_lidas
 FROM conversa c
+JOIN caixa cx ON cx.id = c.caixa_id
 JOIN lead l ON l.id = c.lead_id
 LEFT JOIN ultima_por_conversa ultima ON ultima.conversa_id = c.id
 WHERE
-    (
-        $1::text = 'todas'
-        OR ($1::text = 'abertas' AND c.fechada_em IS NULL)
-        OR ($1::text = 'fechadas' AND c.fechada_em IS NOT NULL)
+    -- G1: caixa nula = todas.
+    ($2::bigint IS NULL OR c.caixa_id = $2::bigint)
+    AND (
+        $3::text = 'todas'
+        OR ($3::text = 'abertas' AND c.fechada_em IS NULL)
+        OR ($3::text = 'fechadas' AND c.fechada_em IS NOT NULL)
     )
     AND (
-        $2::timestamp IS NULL
-        OR COALESCE(ultima.criado_em, c.aberta_em) >= $2::timestamp
+        $4::timestamp IS NULL
+        OR COALESCE(ultima.criado_em, c.aberta_em) >= $4::timestamp
     )
     AND (
-        $3::timestamp IS NULL
-        OR (COALESCE(ultima.criado_em, c.aberta_em), c.id) < ($3::timestamp, $4::bigint)
+        $5::timestamp IS NULL
+        OR (COALESCE(ultima.criado_em, c.aberta_em), c.id) < ($5::timestamp, $6::bigint)
     )
 ORDER BY ultima_atividade DESC, c.id DESC
-LIMIT $5
+LIMIT $7
 `
 
 type ListarConversasParams struct {
+	AplicacaoID     int64            `json:"aplicacao_id"`
+	CaixaID         *int64           `json:"caixa_id"`
 	Estado          string           `json:"estado"`
 	Desde           pgtype.Timestamp `json:"desde"`
 	CursorAtividade pgtype.Timestamp `json:"cursor_atividade"`
@@ -103,6 +124,7 @@ type ListarConversasParams struct {
 
 type ListarConversasRow struct {
 	ID                    int64            `json:"id"`
+	Caixa                 string           `json:"caixa"`
 	AbertaEm              pgtype.Timestamp `json:"aberta_em"`
 	FechadaEm             pgtype.Timestamp `json:"fechada_em"`
 	ContatoNome           *string          `json:"contato_nome"`
@@ -114,6 +136,7 @@ type ListarConversasRow struct {
 	UltimaMensagemTexto   *string          `json:"ultima_mensagem_texto"`
 	UltimaMensagemStatus  *string          `json:"ultima_mensagem_status"`
 	UltimaAtividade       pgtype.Timestamp `json:"ultima_atividade"`
+	NaoLidas              int32            `json:"nao_lidas"`
 }
 
 // "ultima_atividade" e a hora da mensagem mais recente da conversa, ou
@@ -131,6 +154,8 @@ type ListarConversasRow struct {
 // sobre a tabela inteira.
 func (q *Queries) ListarConversas(ctx context.Context, arg ListarConversasParams) ([]ListarConversasRow, error) {
 	rows, err := q.db.Query(ctx, listarConversas,
+		arg.AplicacaoID,
+		arg.CaixaID,
 		arg.Estado,
 		arg.Desde,
 		arg.CursorAtividade,
@@ -146,6 +171,7 @@ func (q *Queries) ListarConversas(ctx context.Context, arg ListarConversasParams
 		var i ListarConversasRow
 		if err := rows.Scan(
 			&i.ID,
+			&i.Caixa,
 			&i.AbertaEm,
 			&i.FechadaEm,
 			&i.ContatoNome,
@@ -157,6 +183,7 @@ func (q *Queries) ListarConversas(ctx context.Context, arg ListarConversasParams
 			&i.UltimaMensagemTexto,
 			&i.UltimaMensagemStatus,
 			&i.UltimaAtividade,
+			&i.NaoLidas,
 		); err != nil {
 			return nil, err
 		}
@@ -230,4 +257,61 @@ func (q *Queries) ListarMensagensDaConversa(ctx context.Context, arg ListarMensa
 		return nil, err
 	}
 	return items, nil
+}
+
+const marcarConversaLida = `-- name: MarcarConversaLida :execrows
+INSERT INTO conversa_leitura (aplicacao_id, conversa_id, ultima_lida_id)
+SELECT $1::bigint, c.id,
+       COALESCE($2::bigint, (SELECT max(m.id) FROM mensagem m WHERE m.conversa_id = c.id))
+  FROM conversa c
+ WHERE c.id = $3::bigint
+   AND COALESCE($2::bigint, (SELECT max(m.id) FROM mensagem m WHERE m.conversa_id = c.id)) IS NOT NULL
+ON CONFLICT (aplicacao_id, conversa_id) DO UPDATE
+   SET ultima_lida_id = GREATEST(conversa_leitura.ultima_lida_id, EXCLUDED.ultima_lida_id),
+       atualizado_em  = now()
+`
+
+type MarcarConversaLidaParams struct {
+	AplicacaoID int64  `json:"aplicacao_id"`
+	AteID       *int64 `json:"ate_id"`
+	ConversaID  int64  `json:"conversa_id"`
+}
+
+// G6. ate_id nulo = ate a ultima mensagem da conversa. GREATEST porque
+// leitura nao retrocede: duas abas marcando fora de ordem nao podem fazer
+// o badge reaparecer. Conversa sem mensagem nao grava nada (0 linhas).
+func (q *Queries) MarcarConversaLida(ctx context.Context, arg MarcarConversaLidaParams) (int64, error) {
+	result, err := q.db.Exec(ctx, marcarConversaLida, arg.AplicacaoID, arg.AteID, arg.ConversaID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const preencherNomeDoLeadSeVazio = `-- name: PreencherNomeDoLeadSeVazio :exec
+UPDATE lead SET nome = $1 WHERE id = $2 AND (nome IS NULL OR nome = '')
+`
+
+type PreencherNomeDoLeadSeVazioParams struct {
+	Nome *string `json:"nome"`
+	ID   int64   `json:"id"`
+}
+
+// G4. O nome informado por quem abre a conversa so vale para lead sem nome:
+// o nome de perfil que o WhatsApp mandou antes continua sendo o dado.
+func (q *Queries) PreencherNomeDoLeadSeVazio(ctx context.Context, arg PreencherNomeDoLeadSeVazioParams) error {
+	_, err := q.db.Exec(ctx, preencherNomeDoLeadSeVazio, arg.Nome, arg.ID)
+	return err
+}
+
+const travarIdentidadeDoContato = `-- name: TravarIdentidadeDoContato :exec
+SELECT pg_advisory_xact_lock(hashtext('abrir_conversa:' || $1::text))
+`
+
+// G4. Serializa a abertura de conversa por telefone dentro da transacao:
+// lead.telefone_e164 nao tem indice unico, entao duas aberturas simultaneas
+// para o mesmo numero criariam dois leads e partiriam o historico.
+func (q *Queries) TravarIdentidadeDoContato(ctx context.Context, telefoneE164 string) error {
+	_, err := q.db.Exec(ctx, travarIdentidadeDoContato, telefoneE164)
+	return err
 }

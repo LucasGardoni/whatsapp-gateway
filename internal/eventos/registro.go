@@ -68,7 +68,7 @@ func RegistrarNaAplicacao(ctx context.Context, r Registrador, app string, evento
 // Some na fase 8, junto com sse.ChaveCorretor e o caminho legado.
 func RegistrarParaCorretorCRM(ctx context.Context, r Registrador, corretorID *int64, evento sse.Evento) error {
 	if corretorID == nil {
-		return RegistrarNaAplicacao(ctx, r, sse.AplicacaoCRM, sse.Evento{Tipo: sse.EventoFilaAtualizada})
+		return RegistrarNaAplicacao(ctx, r, sse.AplicacaoCRM, sse.Evento{Tipo: sse.EventoFilaAtualizada, Caixa: evento.Caixa})
 	}
 	return Registrar(ctx, r, []string{sse.ChaveCorretor(*corretorID)}, evento)
 }
@@ -91,4 +91,36 @@ func gravar(ctx context.Context, r Registrador, chaves []string, app *string, ev
 		return fmt.Errorf("registrar evento %q: %w", evento.Tipo, err)
 	}
 	return nil
+}
+
+// WhatsApp registra os eventos de WhatsApp (G8 de
+// docs/PLANO_MULTICAIXA_E_CONVERSAS.md). Alem do caminho do CRM, entrega o
+// evento completo a cada aplicacao de Aplicacoes, na chave
+// "<app>:caixa:<caixa>" -- quem decide que um usuario pode ler a caixa e a
+// aplicacao, ao emitir o token de sessao para esse destino.
+//
+// A caixa e a da conversa, passada a cada evento (G7): com mais de um
+// numero, um valor fixo aqui entregaria o evento de uma caixa na chave da
+// outra. Todo evento sai com o campo `caixa`, inclusive no caminho do CRM.
+type WhatsApp struct {
+	Aplicacoes []string
+}
+
+// DestinoCaixa e o destino opaco que a aplicacao pede em POST /v1/sessoes
+// para receber os eventos de uma caixa.
+func DestinoCaixa(caixa string) string { return "caixa:" + caixa }
+
+func (w WhatsApp) Registrar(ctx context.Context, r Registrador, caixa string, corretorID *int64, evento sse.Evento) error {
+	evento.Caixa = caixa
+	if err := RegistrarParaCorretorCRM(ctx, r, corretorID, evento); err != nil {
+		return err
+	}
+	if len(w.Aplicacoes) == 0 || caixa == "" {
+		return nil
+	}
+	chaves := make([]string, 0, len(w.Aplicacoes))
+	for _, app := range w.Aplicacoes {
+		chaves = append(chaves, sse.ChaveDestino(app, DestinoCaixa(caixa)))
+	}
+	return Registrar(ctx, r, chaves, evento)
 }

@@ -141,6 +141,7 @@ type entregadorWhatsApp struct {
 	// Validado ja na entrada, e nao so na hora do envio, pra o corretor
 	// receber o erro na hora em vez de a mensagem morrer no outbox.
 	midiaDir string
+	eventos  eventos.WhatsApp
 }
 
 // Validar ignora app: o canal WhatsApp nao tem limite por aplicacao a
@@ -216,7 +217,12 @@ func (e entregadorWhatsApp) Persistir(ctx context.Context, q *store.Queries, app
 		return Entrega{}, fmt.Errorf("registrar hash de auditoria da mensagem %d: %w", linha.ID, err)
 	}
 
-	if err := eventos.RegistrarParaCorretorCRM(ctx, q, conversa.CorretorID, sse.Evento{
+	codigoCaixa, err := q.CodigoDaCaixa(ctx, conversa.CaixaID)
+	if err != nil {
+		return Entrega{}, fmt.Errorf("caixa da conversa %d: %w", conversa.ID, err)
+	}
+
+	if err := e.eventos.Registrar(ctx, q, codigoCaixa, conversa.CorretorID, sse.Evento{
 		Tipo:       sse.EventoMensagemNova,
 		MensagemID: linha.ID,
 		ConversaID: linha.ConversaID,

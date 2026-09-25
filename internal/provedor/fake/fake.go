@@ -5,13 +5,21 @@ package fake
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor"
 )
 
 type Provedor struct {
 	mu sync.Mutex
+
+	// prefixo torna o id devolvido unico entre instancias: provedor_msg_id e
+	// unico no banco inteiro, e duas caixas fake (G1) ou duas execucoes
+	// contra o mesmo banco devolveriam o mesmo "fake-1".
+	prefixo string
 
 	Enviados      []provedor.MensagemTexto
 	EnviadosMidia []provedor.MensagemMidia
@@ -22,8 +30,11 @@ type Provedor struct {
 	ProximoErro error
 }
 
+var instancias atomic.Int64
+
 func Novo() *Provedor {
 	return &Provedor{
+		prefixo:     strconv.FormatInt(time.Now().UnixNano(), 36) + "-" + strconv.FormatInt(instancias.Add(1), 36),
 		StatusAtual: provedor.StatusInstancia{Conectada: true},
 	}
 }
@@ -42,7 +53,7 @@ func (p *Provedor) Enviar(ctx context.Context, msg provedor.MensagemTexto) (*pro
 		return nil, erro
 	}
 
-	return &provedor.ResultadoEnvio{MessageID: fmt.Sprintf("fake-%d", len(p.Enviados))}, nil
+	return &provedor.ResultadoEnvio{MessageID: fmt.Sprintf("fake-%s-%d", p.prefixo, len(p.Enviados))}, nil
 }
 
 func (p *Provedor) EnviarMidia(ctx context.Context, msg provedor.MensagemMidia) (*provedor.ResultadoEnvio, error) {
@@ -57,7 +68,7 @@ func (p *Provedor) EnviarMidia(ctx context.Context, msg provedor.MensagemMidia) 
 		return nil, erro
 	}
 
-	return &provedor.ResultadoEnvio{MessageID: fmt.Sprintf("fake-midia-%d", len(p.EnviadosMidia))}, nil
+	return &provedor.ResultadoEnvio{MessageID: fmt.Sprintf("fake-midia-%s-%d", p.prefixo, len(p.EnviadosMidia))}, nil
 }
 
 func (p *Provedor) Status(ctx context.Context) (*provedor.StatusInstancia, error) {

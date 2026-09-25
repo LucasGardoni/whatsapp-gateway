@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/LucasGardoni/whatsapp-gateway/internal/alerta"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/caixa"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/config"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/dlp"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/eventos"
@@ -25,7 +26,6 @@ import (
 	"github.com/LucasGardoni/whatsapp-gateway/internal/metrica"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/outbox"
-	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor/zapi"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/retencao"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/saude"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/sse"
@@ -58,7 +58,22 @@ func run() error {
 	defer pool.Close()
 
 	queries := store.New(pool)
-	zapiCliente := zapi.NovoCliente(cfg.ZAPIInstanceID, cfg.ZAPIInstanceToken, cfg.ZAPIClientToken)
+
+	// G1: a caixa semente tem o .env como origem. As outras sao cadastradas
+	// direto em `caixa`, sem deploy (docs/PLANO_MULTICAIXA_E_CONVERSAS.md).
+	if err := queries.SincronizarCaixaSemente(ctx, store.SincronizarCaixaSementeParams{
+		Codigo:         cfg.CaixaCodigo,
+		InstanciaID:    cfg.ZAPIInstanceID,
+		InstanciaToken: cfg.ZAPIInstanceToken,
+		ClientToken:    cfg.ZAPIClientToken,
+		WebhookSegredo: cfg.WebhookPathSecret,
+	}); err != nil {
+		return fmt.Errorf("sincronizar caixa semente %q: %w", cfg.CaixaCodigo, err)
+	}
+	caixas := caixa.NovoRegistro(queries, cfg.CaixaCodigo)
+	if _, err := caixas.Ativas(ctx); err != nil {
+		return fmt.Errorf("carregar caixas: %w", err)
+	}
 	motorDLP := dlp.NovoMotor(dlp.Config{
 		DominiosPermitidos: cfg.DLPDominiosPermitidos,
 		SomenteAvisar:      cfg.DLPSomenteAvisar,
@@ -75,9 +90,13 @@ func run() error {
 	assinadorSSE := sse.NovoAssinadorSessao(cfg.SSESigningKey)
 	escutadorEventos := eventos.NovoEscutador(cfg.DatabaseURL, queries, hub, eventos.Config{})
 
-	worker := outbox.NovoWorker(queries, zapiCliente, motorDLP, outbox.Config{MidiaDir: cfg.MidiaDir})
+	// G8: alem do CRM, cada aplicacao listada recebe os eventos de WhatsApp
+	// da caixa (ver eventos.WhatsApp).
+	eventosWhatsApp := eventos.WhatsApp{Aplicacoes: cfg.EventosWhatsAppAplicacoes}
 
-	monitorSaude := saude.NovoMonitor(zapiCliente, queries, saude.Config{NomeProvedor: "zapi"})
+	worker := outbox.NovoWorker(queries, caixas, motorDLP, outbox.Config{MidiaDir: cfg.MidiaDir, EventosWhatsApp: eventosWhatsApp})
+
+	monitorSaude := saude.NovoMonitor(caixas, queries, saude.Config{})
 
 	// o mesmo monitor cobre os dois alertas de volume: o da empresa
 	// (destinatarios distintos, risco de banimento do numero) e o por
@@ -94,22 +113,26 @@ func run() error {
 
 	baixador := midia.NovoBaixador(cfg.MidiaDir)
 	webhookZAPI := handler.NovoWebhookZAPI(pool, baixador)
+	webhookZAPI.EventosWhatsApp = eventosWhatsApp
 
+	// o disparo e do CRM de corretores, que so conhece a caixa semente.
 	identidadeCliente := identidade.NovoCliente(cfg.ZAPIInstanceID, cfg.ZAPIInstanceToken, cfg.ZAPIClientToken)
 	disparo := handler.NovoDisparo(pool, identidadeCliente, cfg.PublicBaseURL)
 	transbordo := handler.NovoTransbordo(pool)
-	mensagensV1 := handler.NovoMensagensV1(pool, cfg.MidiaDir, cfg.LimiteConteudoCifradoBytes, registroMetricas)
+	mensagensV1 := handler.NovoMensagensV1(pool, cfg.MidiaDir, cfg.LimiteConteudoCifradoBytes, registroMetricas).ComEventosWhatsApp(eventosWhatsApp)
 	sessoesSSE := handler.NovoSessoesSSE(assinadorSSE)
 	eventos := handler.NovoEventos(hub, assinadorSSE, cfg.CORSOrigemCRM, registroMetricas)
-	zapiAdmin := handler.NovoZAPIAdmin(zapiCliente)
+	zapiAdmin := handler.NovoZAPIAdmin(caixas)
 	canais := handler.NovoCanais(pool)
-	conversas := handler.NovoConversasV1(pool, cfg.CaixaCodigo)
+	conversas := handler.NovoConversasV1(pool, caixas)
+	contatos := handler.NovoContatosV1(caixas)
+	caixasV1 := handler.NovoCaixasV1(caixas)
 	leads := handler.NovoLeads(pool, ingestao.RegistroPadrao())
 	metricas := handler.NovoMetricas(registroMetricas)
 	leads.VerifyToken = cfg.MetaWebhookVerifyToken
 
 	if cfg.WebhookPathSecret == "" {
-		slog.Warn("WEBHOOK_PATH_SECRET vazio: os webhooks de entrada respondem 404 e nada entra no gateway. Nao exponha o gateway na internet sem ele")
+		slog.Warn("WEBHOOK_PATH_SECRET vazio: o webhook de leads responde 404, e o da z-api so atende o segredo de cada caixa em `caixa.webhook_segredo`. Nao exponha o gateway na internet sem ele")
 	}
 
 	if assinadorSSE == nil {
@@ -129,8 +152,8 @@ func run() error {
 	autenticadorApp := middleware.NovoAutenticadorAplicacao(queries)
 
 	router := httpserver.NovoRouter(
-		webhookZAPI, disparo, transbordo, mensagensV1, sessoesSSE, eventos, zapiAdmin, leads, canais, conversas, metricas,
-		autenticadorApp, registroMetricas,
+		webhookZAPI, disparo, transbordo, mensagensV1, sessoesSSE, eventos, zapiAdmin, leads, canais, conversas, contatos, caixasV1, metricas,
+		caixas, autenticadorApp, registroMetricas,
 		cfg.WebhookPathSecret, cfg.RateLimitPorMinuto, cfg.RateLimitAplicacaoPorMinuto,
 	)
 

@@ -43,7 +43,12 @@ func NovoRouter(
 	leads *handler.Leads,
 	canais *handler.Canais,
 	conversas *handler.ConversasV1,
+	contatos *handler.ContatosV1,
+	caixasV1 *handler.CaixasV1,
 	metricas *handler.Metricas,
+	// caixas resolve o segredo do path dos webhooks da z-api em caixa (G1):
+	// cada numero tem o seu, e e ele que diz de onde veio o callback.
+	caixas middleware.ResolvedorCaixa,
 	// autenticadorApp e a identidade por aplicacao (barramento, fase 1).
 	// Desde a fase 8 ele e a UNICA autenticacao de servico que existe: o
 	// GATEWAY_SERVICE_TOKEN unico foi removido. Nil deixa as rotas
@@ -94,9 +99,12 @@ func NovoRouter(
 
 	segredo := "/{" + middleware.SegredoPathParam + "}"
 
+	// webhooks da z-api: o segredo e o da caixa (caixa.webhook_segredo). A
+	// caixa semente recebe o WEBHOOK_PATH_SECRET na subida, entao a URL ja
+	// configurada no painel continua valendo.
 	r.Group(func(r chi.Router) {
 		r.Use(limiteRequisicoes.Middleware)
-		r.Use(middleware.ExigirSegredoPath(segredoWebhook))
+		r.Use(middleware.CaixaPeloSegredo(caixas))
 
 		r.Post("/webhooks/zapi"+segredo+"/mensagens", webhookZAPI.OnMessageReceived)
 		r.Post("/webhooks/zapi"+segredo+"/status-mensagem", webhookZAPI.OnMessageStatus)
@@ -106,6 +114,11 @@ func NovoRouter(
 		// "Ao enviar" do painel Z-API -- ate a fase 6 essa rota nao
 		// existia e o campo tinha de ficar vazio.
 		r.Post("/webhooks/zapi"+segredo+"/envio", webhookZAPI.OnMessageSend)
+	})
+
+	r.Group(func(r chi.Router) {
+		r.Use(limiteRequisicoes.Middleware)
+		r.Use(middleware.ExigirSegredoPath(segredoWebhook))
 
 		// webhook generico de ingestao de leads (fase 11) -- GET e o
 		// handshake de verificacao que a Meta exige antes de aceitar
@@ -214,6 +227,14 @@ func NovoRouter(
 			// o conversa_id que POST /v1/mensagens exige.
 			r.Get("/v1/conversas", conversas.Listar)
 			r.Get("/v1/conversas/{id}/mensagens", conversas.Mensagens)
+			// G6: leitura por aplicacao, alimenta nao_lidas de GET /v1/conversas.
+			r.Post("/v1/conversas/{id}/lida", conversas.MarcarLida)
+			// G4: conversa com numero que nunca falou com a caixa.
+			r.Post("/v1/conversas", conversas.Abrir)
+			// G5: agenda da instancia, para sincronizacao agendada.
+			r.Get("/v1/contatos", contatos.Listar)
+			// G1: numeros ativos, para a aplicacao ligar o cadastro dela.
+			r.Get("/v1/caixas", caixasV1.Listar)
 		})
 	}
 

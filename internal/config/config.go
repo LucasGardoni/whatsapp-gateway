@@ -39,7 +39,10 @@ type Config struct {
 	// (P0-03). Nunca "*": o token de sessao viaja na query string, e "*"
 	// deixaria qualquer site aberto no browser do corretor ler o stream.
 	// Vazio nao emite o header (dev via curl continua funcionando).
-	CORSOrigemCRM string
+	//
+	// Aceita lista separada por virgula: cada aplicacao cujo browser abre
+	// o stream direto (CRM, portal) entra com a propria origem.
+	CORSOrigemCRM []string
 
 	// WebhookPathSecret e o segredo compartilhado no path dos webhooks de
 	// entrada (P1-10). Quem chama esses endpoints -- painel da Z-API, Meta,
@@ -103,6 +106,11 @@ type Config struct {
 	// devolve este valor no campo `caixa` de cada conversa, e valida
 	// contra ele quando o chamador manda o parametro `caixa` na query.
 	CaixaCodigo string
+
+	// EventosWhatsAppAplicacoes sao os codigos de aplicacao que recebem os
+	// eventos de WhatsApp da caixa na chave "<app>:caixa:<CaixaCodigo>"
+	// (G8). Vazio mantem so o caminho do CRM.
+	EventosWhatsAppAplicacoes []string
 }
 
 // tamanhoMinimoChaveSSE em bytes -- 32 caracteres cobrem com folga os 256
@@ -126,7 +134,7 @@ func Load() (*Config, error) {
 
 		PublicBaseURL: getEnv("PUBLIC_BASE_URL", "http://localhost:8080"),
 
-		CORSOrigemCRM: os.Getenv("CORS_ORIGEM_CRM"),
+		CORSOrigemCRM: getLista("CORS_ORIGEM_CRM"),
 
 		WebhookPathSecret: os.Getenv("WEBHOOK_PATH_SECRET"),
 
@@ -141,6 +149,8 @@ func Load() (*Config, error) {
 		SSESigningKey: os.Getenv("SSE_SIGNING_KEY"),
 
 		CaixaCodigo: getEnv("CAIXA_CODIGO", "rod_lider"),
+
+		EventosWhatsAppAplicacoes: getLista("EVENTOS_WHATSAPP_APLICACOES"),
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -154,8 +164,10 @@ func Load() (*Config, error) {
 	// "*" nunca serve aqui: o token de sessao vai na query string de
 	// /eventos, entao um curinga deixaria qualquer origem ler o stream do
 	// corretor. Melhor recusar na subida do que emitir um header inseguro.
-	if cfg.CORSOrigemCRM == "*" {
-		return nil, fmt.Errorf(`carregar config: CORS_ORIGEM_CRM não pode ser "*"; use a origem exata do CRM (ex.: http://localhost:8081)`)
+	for _, origem := range cfg.CORSOrigemCRM {
+		if origem == "*" {
+			return nil, fmt.Errorf(`carregar config: CORS_ORIGEM_CRM não pode ter "*"; use a origem exata de cada aplicação (ex.: http://localhost:8081)`)
+		}
 	}
 
 	// o segredo vai virar um segmento de path -- se precisar de escape, a

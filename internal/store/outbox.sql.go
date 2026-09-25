@@ -86,11 +86,13 @@ func (q *Queries) ResetarMensagensPresasEmEnvio(ctx context.Context) error {
 
 const selecionarPendentesParaEnvio = `-- name: SelecionarPendentesParaEnvio :many
 WITH selecionadas AS (
-    SELECT id FROM mensagem
-    WHERE status = 'pendente' AND direcao = 'saida' AND tentar_em <= LOCALTIMESTAMP
-    ORDER BY criado_em
-    FOR UPDATE SKIP LOCKED
-    LIMIT $1
+    SELECT m.id FROM mensagem m
+    JOIN conversa c ON c.id = m.conversa_id
+    WHERE m.status = 'pendente' AND m.direcao = 'saida' AND m.tentar_em <= LOCALTIMESTAMP
+      AND c.caixa_id = $1
+    ORDER BY m.criado_em
+    FOR UPDATE OF m SKIP LOCKED
+    LIMIT $2
 ), atualizadas AS (
     UPDATE mensagem m
     SET status = 'enviando'
@@ -103,6 +105,11 @@ FROM atualizadas a
 JOIN conversa c ON c.id = a.conversa_id
 JOIN lead ON lead.id = c.lead_id
 `
+
+type SelecionarPendentesParaEnvioParams struct {
+	CaixaID int64 `json:"caixa_id"`
+	Limite  int32 `json:"limite"`
+}
 
 type SelecionarPendentesParaEnvioRow struct {
 	ID           int64   `json:"id"`
@@ -118,11 +125,14 @@ type SelecionarPendentesParaEnvioRow struct {
 
 // outbox: a fila e a propria tabela mensagem filtrada por status (secao 7).
 // FOR UPDATE SKIP LOCKED evita que dois workers peguem a mesma mensagem.
+//
+// Uma caixa por vez (G1): o worker so seleciona o que vai mandar pelo
+// provedor que tem na mao, e caixa desconectada nem entra no ciclo.
 // conversa_id e corretor_id alimentam a publicacao do evento sse apos o
 // envio (fase 7) -- sem eles o worker nao sabe pra qual corretor notificar.
 // tipo/midia_caminho alimentam o envio de midia (fase 9).
-func (q *Queries) SelecionarPendentesParaEnvio(ctx context.Context, limit int32) ([]SelecionarPendentesParaEnvioRow, error) {
-	rows, err := q.db.Query(ctx, selecionarPendentesParaEnvio, limit)
+func (q *Queries) SelecionarPendentesParaEnvio(ctx context.Context, arg SelecionarPendentesParaEnvioParams) ([]SelecionarPendentesParaEnvioRow, error) {
+	rows, err := q.db.Query(ctx, selecionarPendentesParaEnvio, arg.CaixaID, arg.Limite)
 	if err != nil {
 		return nil, err
 	}

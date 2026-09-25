@@ -18,9 +18,10 @@ const intervaloHeartbeat = 25 * time.Second
 // cookie de sessao do CRM (dominio/porta diferentes).
 type Eventos struct {
 	hub *sse.Hub
-	// origemCRM e a origem exata autorizada a abrir o stream (P0-03).
-	// Vazio nao emite o header -- consumo por curl/servidor nao precisa.
-	origemCRM string
+	// origens sao as origens exatas autorizadas a abrir o stream (P0-03).
+	// A resposta ecoa o Origin da requisicao so se ele estiver aqui; fora
+	// da lista (ou sem Origin, curl/servidor) o header nao sai.
+	origens map[string]struct{}
 	// assinador valida o token de sessao (barramento, fase 3). Nil quando
 	// SSE_SIGNING_KEY nao esta configurada -- e ai nenhuma conexao abre,
 	// em vez de abrir sem autenticacao (fail closed, padrao da base).
@@ -36,8 +37,12 @@ type Eventos struct {
 	registro *metrica.Registro
 }
 
-func NovoEventos(hub *sse.Hub, assinador *sse.AssinadorSessao, origemCRM string, registro *metrica.Registro) *Eventos {
-	return &Eventos{hub: hub, assinador: assinador, origemCRM: origemCRM, registro: registro}
+func NovoEventos(hub *sse.Hub, assinador *sse.AssinadorSessao, origens []string, registro *metrica.Registro) *Eventos {
+	permitidas := make(map[string]struct{}, len(origens))
+	for _, o := range origens {
+		permitidas[o] = struct{}{}
+	}
+	return &Eventos{hub: hub, assinador: assinador, origens: permitidas, registro: registro}
 }
 
 func (h *Eventos) Servir(w http.ResponseWriter, r *http.Request) {
@@ -46,9 +51,13 @@ func (h *Eventos) Servir(w http.ResponseWriter, r *http.Request) {
 	// generico e o corretor ve "falha ao conectar" sem causa nenhuma.
 	// Vary: Origin porque a resposta muda conforme a origem -- sem isso um
 	// proxy pode servir a resposta de uma origem para outra.
-	if h.origemCRM != "" {
-		w.Header().Set("Access-Control-Allow-Origin", h.origemCRM)
+	if len(h.origens) > 0 {
 		w.Header().Set("Vary", "Origin")
+		if origem := r.Header.Get("Origin"); origem != "" {
+			if _, ok := h.origens[origem]; ok {
+				w.Header().Set("Access-Control-Allow-Origin", origem)
+			}
+		}
 	}
 
 	if h.assinador == nil {

@@ -1,9 +1,12 @@
 package handler
 
 import (
+	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -15,30 +18,68 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/LucasGardoni/whatsapp-gateway/internal/caixa"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/http/middleware"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/identidade"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
 )
 
-// ConversasV1 atende G2/G3 do barramento (docs/PLANO_MULTICAIXA_E_CONVERSAS.md):
-// GET /v1/conversas e GET /v1/conversas/{id}/mensagens. Devolver o que o
-// gateway mesmo gravou em `conversa`/`mensagem` nao e consulta de dominio
-// da aplicacao -- e por isso vive aqui, sem nenhum if por aplicacao.
+// ConversasV1 atende G2/G3/G4/G6 do barramento (docs/PLANO_MULTICAIXA_E_CONVERSAS.md):
+// GET /v1/conversas, GET /v1/conversas/{id}/mensagens, POST /v1/conversas e
+// POST /v1/conversas/{id}/lida. Devolver o que o gateway mesmo gravou em
+// `conversa`/`mensagem` nao e consulta de dominio da aplicacao -- e por
+// isso vive aqui, sem nenhum if por aplicacao.
 //
-// nao_lidas fica em 0 por enquanto: a contagem depende da marcacao de
-// leitura por aplicacao (G6, ainda nao construido -- ver "ordem de
-// execucao" do plano). O campo ja existe no contrato para o portal nao
-// precisar mudar o shape da resposta quando G6 chegar.
+// nao_lidas e por aplicacao (G6): entrada acima da ultima leitura que a
+// aplicacao autenticada marcou.
 type ConversasV1 struct {
 	pool *pgxpool.Pool
-	// caixaCodigo e o codigo constante da unica caixa que existe hoje
-	// (G1 -- multi-caixa -- ainda nao foi construido). Enquanto so houver
-	// uma, o parametro `caixa` da query e validado contra ela em vez de
-	// ignorado: um valor errado e sinal de bug no chamador, nao motivo
-	// pra silenciosamente devolver a caixa certa.
-	caixaCodigo string
+	// caixas resolve o parametro `caixa` (G1). Codigo que nao casa com caixa
+	// ativa e 400, nunca a caixa padrao: um valor errado e bug no chamador,
+	// e devolver outra caixa esconderia o bug.
+	caixas caixasV1
+	// identidade devolve o resolvedor de @lid DA CAIXA: o get-iswhatsapp tem
+	// de ser perguntado a instancia que vai conversar. Nil segue sem @lid.
+	identidade func(caixa.Caixa) resolvedorLid
 }
 
-func NovoConversasV1(pool *pgxpool.Pool, caixaCodigo string) *ConversasV1 {
-	return &ConversasV1{pool: pool, caixaCodigo: caixaCodigo}
+// caixasV1 e o pedaco de caixa.Registro que as rotas /v1 usam.
+type caixasV1 interface {
+	PorCodigo(ctx context.Context, codigo string) (caixa.Caixa, error)
+}
+
+// resolvedorLid e o pedaco de identidade.Cliente que a abertura usa.
+type resolvedorLid interface {
+	ResolverLid(ctx context.Context, telefone string) (*identidade.ResultadoLid, error)
+}
+
+func NovoConversasV1(pool *pgxpool.Pool, caixas *caixa.Registro) *ConversasV1 {
+	return &ConversasV1{
+		pool:   pool,
+		caixas: caixas,
+		identidade: func(c caixa.Caixa) resolvedorLid {
+			if cl, ok := caixas.Identidade(c); ok {
+				return cl
+			}
+			return nil
+		},
+	}
+}
+
+// caixaDaRequisicao resolve o codigo pedido; vazio e a caixa padrao. false
+// ja respondeu (400 para codigo desconhecido).
+func caixaDaRequisicao(w http.ResponseWriter, r *http.Request, caixas caixasV1, codigo string) (caixa.Caixa, bool) {
+	cx, err := caixas.PorCodigo(r.Context(), strings.TrimSpace(codigo))
+	if errors.Is(err, caixa.ErrDesconhecida) {
+		http.Error(w, "caixa desconhecida: "+codigo, http.StatusBadRequest)
+		return caixa.Caixa{}, false
+	}
+	if err != nil {
+		slog.Error("v1: resolver caixa", "caixa", codigo, "erro", err)
+		http.Error(w, "erro interno", http.StatusInternalServerError)
+		return caixa.Caixa{}, false
+	}
+	return cx, true
 }
 
 const (
@@ -111,9 +152,14 @@ func decodificarCursor(s string) (cursorConversas, error) {
 func (h *ConversasV1) Listar(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
-	if caixa := strings.TrimSpace(q.Get("caixa")); caixa != "" && caixa != h.caixaCodigo {
-		http.Error(w, "caixa desconhecida: "+caixa, http.StatusBadRequest)
-		return
+	// sem `caixa`, todas: cada conversa diz a sua no campo `caixa`.
+	var caixaID *int64
+	if codigo := strings.TrimSpace(q.Get("caixa")); codigo != "" {
+		cx, ok := caixaDaRequisicao(w, r, h.caixas, codigo)
+		if !ok {
+			return
+		}
+		caixaID = &cx.ID
 	}
 
 	estado := strings.TrimSpace(q.Get("estado"))
@@ -156,7 +202,13 @@ func (h *ConversasV1) Listar(w http.ResponseWriter, r *http.Request) {
 		cursorID = &id
 	}
 
+	// sem aplicacao no contexto (so nos testes que montam o handler sem o
+	// middleware) o id 0 nao casa com leitura nenhuma: tudo conta como nao lido.
+	app, _ := middleware.AplicacaoDoContexto(r.Context())
+
 	linhas, err := store.New(h.pool).ListarConversas(r.Context(), store.ListarConversasParams{
+		AplicacaoID:     app.ID,
+		CaixaID:         caixaID,
 		Estado:          estado,
 		Desde:           desde,
 		CursorAtividade: cursorAtividade,
@@ -174,15 +226,14 @@ func (h *ConversasV1) Listar(w http.ResponseWriter, r *http.Request) {
 	for _, l := range linhas {
 		item := conversaResponse{
 			ID:    l.ID,
-			Caixa: h.caixaCodigo,
+			Caixa: l.Caixa,
 			Contato: contatoResponse{
 				Nome:         l.ContatoNome,
 				TelefoneE164: l.ContatoTelefone,
 				ChatLid:      l.ContatoChatLid,
 			},
 			AbertaEm: formatarTimestamp(l.AbertaEm),
-			// nao_lidas: ver comentario do tipo ConversasV1 -- depende de G6.
-			NaoLidas: 0,
+			NaoLidas: int(l.NaoLidas),
 		}
 		if l.FechadaEm.Valid {
 			s := formatarTimestamp(l.FechadaEm)
@@ -308,6 +359,236 @@ func (h *ConversasV1) Mensagens(w http.ResponseWriter, r *http.Request) {
 	}
 
 	responderJSON(w, resp)
+}
+
+type marcarLidaRequest struct {
+	AteID *int64 `json:"ate_id"`
+}
+
+// MarcarLida atende POST /v1/conversas/{id}/lida (G6). Corpo opcional:
+// sem ate_id marca ate a ultima mensagem da conversa. A leitura nunca
+// retrocede (GREATEST na query).
+func (h *ConversasV1) MarcarLida(w http.ResponseWriter, r *http.Request) {
+	app, autenticada := middleware.AplicacaoDoContexto(r.Context())
+	if !autenticada {
+		http.Error(w, "nao autorizado", http.StatusUnauthorized)
+		return
+	}
+
+	conversaID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || conversaID <= 0 {
+		http.Error(w, "id de conversa invalido", http.StatusBadRequest)
+		return
+	}
+
+	var req marcarLidaRequest
+	corpo, err := io.ReadAll(io.LimitReader(r.Body, tamanhoMaximoPayload))
+	if err != nil {
+		http.Error(w, "payload invalido", http.StatusBadRequest)
+		return
+	}
+	if len(bytes.TrimSpace(corpo)) > 0 {
+		if err := json.Unmarshal(corpo, &req); err != nil {
+			http.Error(w, "payload invalido", http.StatusBadRequest)
+			return
+		}
+	}
+	if req.AteID != nil && *req.AteID <= 0 {
+		http.Error(w, "ate_id deve ser positivo", http.StatusBadRequest)
+		return
+	}
+
+	queries := store.New(h.pool)
+	if _, err := queries.BuscarConversaComContatoPorID(r.Context(), conversaID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, "conversa nao encontrada", http.StatusNotFound)
+			return
+		}
+		slog.Error("conversas v1: buscar conversa", "conversa_id", conversaID, "erro", err)
+		http.Error(w, "erro interno", http.StatusInternalServerError)
+		return
+	}
+
+	// 0 linhas = conversa sem mensagem e sem ate_id: nada a marcar, e o
+	// resultado para quem chamou e o mesmo (nada nao lido).
+	if _, err := queries.MarcarConversaLida(r.Context(), store.MarcarConversaLidaParams{
+		AplicacaoID: app.ID,
+		ConversaID:  conversaID,
+		AteID:       req.AteID,
+	}); err != nil {
+		slog.Error("conversas v1: marcar lida", "conversa_id", conversaID, "aplicacao", app.Codigo, "erro", err)
+		http.Error(w, "erro interno", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type abrirConversaRequest struct {
+	Caixa        string `json:"caixa"`
+	TelefoneE164 string `json:"telefone_e164"`
+	Nome         string `json:"nome"`
+}
+
+type abrirConversaResponse struct {
+	ID      int64           `json:"id"`
+	Caixa   string          `json:"caixa"`
+	Criada  bool            `json:"criada"`
+	Contato contatoResponse `json:"contato"`
+}
+
+// Abrir atende POST /v1/conversas (G4): conversa com numero que nunca falou
+// com a caixa. Idempotente por contato -- com conversa aberta, devolve ela
+// (200, criada=false) em vez de criar outra.
+//
+// O @lid e resolvido aqui, como no disparo: e ele que faz a resposta do
+// contato, quando chegar pelo webhook, cair nesta conversa mesmo se a z-api
+// ocultar o telefone. Falha na resolucao nao impede a abertura; so a
+// resposta "nao esta no WhatsApp" impede (422).
+func (h *ConversasV1) Abrir(w http.ResponseWriter, r *http.Request) {
+	var req abrirConversaRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, tamanhoMaximoPayload)).Decode(&req); err != nil {
+		http.Error(w, "payload invalido", http.StatusBadRequest)
+		return
+	}
+	cx, ok := caixaDaRequisicao(w, r, h.caixas, req.Caixa)
+	if !ok {
+		return
+	}
+	telefone, err := identidade.NormalizarE164(req.TelefoneE164)
+	if err != nil {
+		http.Error(w, "telefone_e164 invalido", http.StatusBadRequest)
+		return
+	}
+	nome := strings.TrimSpace(req.Nome)
+
+	ctx := r.Context()
+
+	var lid string
+	var resolvedor resolvedorLid
+	if h.identidade != nil {
+		resolvedor = h.identidade(cx)
+	}
+	var resultado *identidade.ResultadoLid
+	if resolvedor == nil {
+		err = errors.New("caixa sem resolvedor de @lid")
+	} else {
+		resultado, err = resolvedor.ResolverLid(ctx, strings.TrimPrefix(telefone, "+"))
+	}
+	switch {
+	case err != nil:
+		slog.Warn("conversas v1: falha ao resolver lid, abrindo sem chat_lid", "erro", err)
+	case !resultado.Resolvido:
+		slog.Warn("conversas v1: z-api nao resolveu o telefone, abrindo sem chat_lid")
+	case !resultado.Existe:
+		http.Error(w, "numero nao esta no WhatsApp", http.StatusUnprocessableEntity)
+		return
+	default:
+		lid = resultado.Lid
+	}
+
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		slog.Error("conversas v1: abrir: iniciar transacao", "erro", err)
+		http.Error(w, "erro interno", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(ctx)
+	queries := store.New(tx)
+
+	if err := queries.TravarIdentidadeDoContato(ctx, telefone); err != nil {
+		slog.Error("conversas v1: abrir: travar identidade", "erro", err)
+		http.Error(w, "erro interno", http.StatusInternalServerError)
+		return
+	}
+
+	lead, err := h.leadDoContato(ctx, queries, telefone, lid, nome)
+	if err != nil {
+		slog.Error("conversas v1: abrir: resolver lead", "erro", err)
+		http.Error(w, "erro interno", http.StatusInternalServerError)
+		return
+	}
+
+	criada := false
+	conversa, err := queries.BuscarConversaAbertaPorLead(ctx, store.BuscarConversaAbertaPorLeadParams{LeadID: lead.ID, CaixaID: cx.ID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		conversa, err = queries.CriarConversa(ctx, store.CriarConversaParams{LeadID: lead.ID, CaixaID: cx.ID})
+		criada = true
+	}
+	if err != nil {
+		slog.Error("conversas v1: abrir: obter conversa", "lead_id", lead.ID, "erro", err)
+		http.Error(w, "erro interno", http.StatusInternalServerError)
+		return
+	}
+
+	contato, err := queries.BuscarConversaComContatoPorID(ctx, conversa.ID)
+	if err != nil {
+		slog.Error("conversas v1: abrir: ler contato", "conversa_id", conversa.ID, "erro", err)
+		http.Error(w, "erro interno", http.StatusInternalServerError)
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		slog.Error("conversas v1: abrir: commit", "erro", err)
+		http.Error(w, "erro interno", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if criada {
+		w.WriteHeader(http.StatusCreated)
+	}
+	_ = json.NewEncoder(w).Encode(abrirConversaResponse{
+		ID:     conversa.ID,
+		Caixa:  cx.Codigo,
+		Criada: criada,
+		Contato: contatoResponse{
+			Nome:         contato.ContatoNome,
+			TelefoneE164: contato.ContatoTelefone,
+			ChatLid:      contato.ContatoChatLid,
+		},
+	})
+}
+
+// leadDoContato acha o lead pela mesma precedencia do matcher (@lid, depois
+// telefone) ou cria um. Lead achado por telefone adota o @lid resolvido.
+func (h *ConversasV1) leadDoContato(ctx context.Context, queries *store.Queries, telefone, lid, nome string) (store.Lead, error) {
+	if lid != "" {
+		lead, err := queries.BuscarLeadPorChatLid(ctx, &lid)
+		if err == nil {
+			return lead, h.completarNome(ctx, queries, lead, nome)
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return store.Lead{}, err
+		}
+	}
+
+	lead, err := queries.BuscarLeadPorTelefone(ctx, &telefone)
+	if err == nil {
+		if lid != "" && lead.ChatLid == nil {
+			if err := queries.PreencherChatLidSeVazio(ctx, store.PreencherChatLidSeVazioParams{ID: lead.ID, ChatLid: &lid}); err != nil {
+				return store.Lead{}, err
+			}
+		}
+		return lead, h.completarNome(ctx, queries, lead, nome)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return store.Lead{}, err
+	}
+
+	return queries.CriarLead(ctx, store.CriarLeadParams{
+		Nome:         naoVazio(nome),
+		TelefoneE164: &telefone,
+		ChatLid:      naoVazio(lid),
+		Origem:       naoVazio("aplicacao"),
+	})
+}
+
+func (h *ConversasV1) completarNome(ctx context.Context, queries *store.Queries, lead store.Lead, nome string) error {
+	if nome == "" || (lead.Nome != nil && *lead.Nome != "") {
+		return nil
+	}
+	return queries.PreencherNomeDoLeadSeVazio(ctx, store.PreencherNomeDoLeadSeVazioParams{ID: lead.ID, Nome: &nome})
 }
 
 func formatarTimestamp(t pgtype.Timestamp) string {

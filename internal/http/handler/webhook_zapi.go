@@ -17,8 +17,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/LucasGardoni/whatsapp-gateway/internal/auditoria"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/caixa"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/eventos"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/http/middleware"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/identidade"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/matcher"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor/zapi"
@@ -43,6 +45,9 @@ const origemProvedorZAPI = "zapi"
 type WebhookZAPI struct {
 	pool     *pgxpool.Pool
 	baixador *midia.Baixador
+	// EventosWhatsApp entrega os eventos tambem por caixa (G8). Zero
+	// mantem so o caminho do CRM.
+	EventosWhatsApp eventos.WhatsApp
 }
 
 func NovoWebhookZAPI(pool *pgxpool.Pool, baixador *midia.Baixador) *WebhookZAPI {
@@ -54,6 +59,11 @@ func NovoWebhookZAPI(pool *pgxpool.Pool, baixador *midia.Baixador) *WebhookZAPI 
 // gravado antes de qualquer parse -- se essa gravacao falhar, respondemos
 // erro para a z-api reenviar; nada mais roda sem o bruto persistido.
 func (h *WebhookZAPI) OnMessageReceived(w http.ResponseWriter, r *http.Request) {
+	cx, ok := caixaDoWebhook(w, r)
+	if !ok {
+		return
+	}
+
 	corpo, err := io.ReadAll(io.LimitReader(r.Body, tamanhoMaximoPayload))
 	if err != nil {
 		http.Error(w, "erro ao ler corpo", http.StatusBadRequest)
@@ -76,10 +86,22 @@ func (h *WebhookZAPI) OnMessageReceived(w http.ResponseWriter, r *http.Request) 
 
 	// contexto novo -- r.Context() e cancelado quando o handler retorna,
 	// mas o processamento continua depois da resposta.
-	go h.processarMensagemRecebida(payloadBrutoID, corpo)
+	go h.processarMensagemRecebida(cx, payloadBrutoID, corpo)
 }
 
-func (h *WebhookZAPI) processarMensagemRecebida(payloadBrutoID int64, corpo []byte) {
+// caixaDoWebhook devolve a caixa que o middleware resolveu pelo segredo do
+// path (G1). Sem ela o handler nao sabe de qual numero veio o callback, e
+// adivinhar gravaria a conversa na caixa errada: responde 404, como segredo
+// desconhecido.
+func caixaDoWebhook(w http.ResponseWriter, r *http.Request) (caixa.Caixa, bool) {
+	cx, ok := caixa.DoContexto(r.Context())
+	if !ok {
+		http.NotFound(w, r)
+	}
+	return cx, ok
+}
+
+func (h *WebhookZAPI) processarMensagemRecebida(cx caixa.Caixa, payloadBrutoID int64, corpo []byte) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeoutProcessamento)
 	defer cancel()
 
@@ -124,6 +146,17 @@ func (h *WebhookZAPI) processarMensagemRecebida(payloadBrutoID int64, corpo []by
 	nomeExibido := payload.SenderName
 	if nomeExibido == "" {
 		nomeExibido = payload.ChatName
+	}
+
+	// cada webhook processa na propria goroutine: duas mensagens seguidas de
+	// um contato novo criavam dois leads (lead.telefone_e164 nao e unico) e
+	// partiam o historico. Mesmo lock da abertura de conversa (G4), entao os
+	// dois caminhos tambem se serializam entre si.
+	if chave := chaveIdentidade(payload.Phone, chatLidCandidato); chave != "" {
+		if err := queries.TravarIdentidadeDoContato(ctx, chave); err != nil {
+			slog.Error("webhook zapi: travar identidade do contato", "erro", err)
+			return
+		}
 	}
 
 	resultado, err := matcher.Resolver(ctx, queries, matcher.Entrada{
@@ -175,9 +208,11 @@ func (h *WebhookZAPI) processarMensagemRecebida(payloadBrutoID int64, corpo []by
 		return
 	}
 
-	conversa, err := queries.BuscarConversaAbertaPorLead(ctx, resultado.LeadID)
+	// a conversa e do numero que recebeu (G1): o mesmo contato escrevendo
+	// para a Lider e para a Franco tem duas conversas.
+	conversa, err := queries.BuscarConversaAbertaPorLead(ctx, store.BuscarConversaAbertaPorLeadParams{LeadID: resultado.LeadID, CaixaID: cx.ID})
 	if errors.Is(err, pgx.ErrNoRows) {
-		conversa, err = queries.CriarConversa(ctx, resultado.LeadID)
+		conversa, err = queries.CriarConversa(ctx, store.CriarConversaParams{LeadID: resultado.LeadID, CaixaID: cx.ID})
 	}
 	if err != nil {
 		slog.Error("webhook zapi: obter conversa", "lead_id", resultado.LeadID, "erro", err)
@@ -230,7 +265,7 @@ func (h *WebhookZAPI) processarMensagemRecebida(payloadBrutoID int64, corpo []by
 	// dispara no commit, entao ninguem e notificado de uma mensagem que a
 	// transacao acabou descartando -- a mesma garantia de antes, agora
 	// valendo para todas as instancias e nao so para esta.
-	if err := eventos.RegistrarParaCorretorCRM(ctx, queries, conversa.CorretorID, sse.Evento{
+	if err := h.EventosWhatsApp.Registrar(ctx, queries, cx.Codigo, conversa.CorretorID, sse.Evento{
 		Tipo:       sse.EventoMensagemNova,
 		MensagemID: mensagemID,
 		ConversaID: conversa.ID,
@@ -244,6 +279,23 @@ func (h *WebhookZAPI) processarMensagemRecebida(payloadBrutoID int64, corpo []by
 		slog.Error("webhook zapi: commit", "erro", err)
 		return
 	}
+}
+
+// chaveIdentidade e o telefone normalizado, como na abertura de conversa;
+// sem telefone (contato que so aparece por @lid), o proprio @lid.
+func chaveIdentidade(phone, chatLid string) string {
+	if phone != "" && !identidade.EhLid(phone) {
+		if e164, err := identidade.NormalizarE164(phone); err == nil {
+			return e164
+		}
+	}
+	if chatLid != "" {
+		return chatLid
+	}
+	if identidade.EhLid(phone) {
+		return phone
+	}
+	return ""
 }
 
 // classificarConteudo decide o tipo (secao 7 -- CHECK constraint de
@@ -269,6 +321,11 @@ func classificarConteudo(p zapi.PayloadRecebido) (tipo, texto, midiaURL, downloa
 // OnMessageStatus atualiza enviada -> entregue -> lida. Um callback pode
 // trazer varios ids de uma vez.
 func (h *WebhookZAPI) OnMessageStatus(w http.ResponseWriter, r *http.Request) {
+	cx, ok := caixaDoWebhook(w, r)
+	if !ok {
+		return
+	}
+
 	var payload zapi.PayloadStatusMensagem
 	if err := json.NewDecoder(io.LimitReader(r.Body, tamanhoMaximoPayload)).Decode(&payload); err != nil {
 		http.Error(w, "payload invalido", http.StatusBadRequest)
@@ -288,17 +345,18 @@ func (h *WebhookZAPI) OnMessageStatus(w http.ResponseWriter, r *http.Request) {
 		atualizadas, err := queries.AtualizarStatusMensagemPorProvedorMsgID(r.Context(), store.AtualizarStatusMensagemPorProvedorMsgIDParams{
 			ProvedorMsgID: &id,
 			Status:        statusInterno,
+			CaixaID:       cx.ID,
 		})
 		if err != nil {
 			slog.Error("webhook zapi: atualizar status da mensagem", "provedor_msg_id", id, "erro", err)
 			continue
 		}
 		if len(atualizadas) == 0 {
-			slog.Warn("webhook zapi: status recebido para mensagem desconhecida", "provedor_msg_id", id)
+			slog.Warn("webhook zapi: status recebido para mensagem desconhecida", "caixa", cx.Codigo, "provedor_msg_id", id)
 			continue
 		}
 		for _, m := range atualizadas {
-			if err := eventos.RegistrarParaCorretorCRM(r.Context(), queries, m.CorretorID, sse.Evento{
+			if err := h.EventosWhatsApp.Registrar(r.Context(), queries, cx.Codigo, m.CorretorID, sse.Evento{
 				Tipo:       sse.EventoMensagemStatus,
 				MensagemID: m.ID,
 				ConversaID: m.ConversaID,
@@ -342,6 +400,11 @@ func mapearStatus(statusZAPI string) (string, bool) {
 // conduz e on-message-status, que tem a guarda de ordem (P2-15). Mexer aqui
 // tambem criaria duas fontes para a mesma coluna.
 func (h *WebhookZAPI) OnMessageSend(w http.ResponseWriter, r *http.Request) {
+	cx, ok := caixaDoWebhook(w, r)
+	if !ok {
+		return
+	}
+
 	var payload zapi.PayloadEnvio
 	if err := json.NewDecoder(io.LimitReader(r.Body, tamanhoMaximoPayload)).Decode(&payload); err != nil {
 		http.Error(w, "payload invalido", http.StatusBadRequest)
@@ -361,7 +424,7 @@ func (h *WebhookZAPI) OnMessageSend(w http.ResponseWriter, r *http.Request) {
 		// sem id nao ha o que marcar, mas o erro em si e informacao de
 		// saude do numero -- registrar como alerta e melhor que descartar.
 		log.Warn("webhook zapi: falha de envio sem id de mensagem", "erro_zapi", payload.Error)
-		h.registrarAlertaDeEnvio(r.Context(), log, payload, 0)
+		h.registrarAlertaDeEnvio(r.Context(), log, cx, payload, 0)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -374,6 +437,7 @@ func (h *WebhookZAPI) OnMessageSend(w http.ResponseWriter, r *http.Request) {
 		afetadas, err := queries.MarcarFalhaDeEnvioPorProvedorMsgID(ctx, store.MarcarFalhaDeEnvioPorProvedorMsgIDParams{
 			ProvedorMsgID: &id,
 			UltimoErro:    naoVazio(payload.Error),
+			CaixaID:       cx.ID,
 		})
 		if err != nil {
 			log.Error("webhook zapi: marcar falha de envio", "provedor_msg_id", id, "erro", err)
@@ -389,9 +453,9 @@ func (h *WebhookZAPI) OnMessageSend(w http.ResponseWriter, r *http.Request) {
 		for _, m := range afetadas {
 			log.Warn("webhook zapi: envio falhou de forma assincrona",
 				"mensagem_id", m.ID, "provedor_msg_id", id, "erro_zapi", payload.Error)
-			h.registrarAlertaDeEnvio(ctx, log, payload, m.ID)
+			h.registrarAlertaDeEnvio(ctx, log, cx, payload, m.ID)
 
-			if err := eventos.RegistrarParaCorretorCRM(ctx, queries, m.CorretorID, sse.Evento{
+			if err := h.EventosWhatsApp.Registrar(ctx, queries, cx.Codigo, m.CorretorID, sse.Evento{
 				Tipo:       sse.EventoMensagemStatus,
 				MensagemID: m.ID,
 				ConversaID: m.ConversaID,
@@ -409,13 +473,13 @@ func (h *WebhookZAPI) OnMessageSend(w http.ResponseWriter, r *http.Request) {
 // Supervisao ver. Shadowban ganha tipo proprio porque a acao e diferente:
 // falha comum e um numero ruim, shadowban e o numero B em risco e exige
 // parar os envios.
-func (h *WebhookZAPI) registrarAlertaDeEnvio(ctx context.Context, log *slog.Logger, payload zapi.PayloadEnvio, mensagemID int64) {
+func (h *WebhookZAPI) registrarAlertaDeEnvio(ctx context.Context, log *slog.Logger, cx caixa.Caixa, payload zapi.PayloadEnvio, mensagemID int64) {
 	tipo := tipoAlertaFalhaEnvio
 	if zapi.ClassificarErro(0, payload.Error) == zapi.ErroShadowban {
 		tipo = tipoAlertaShadowban
 	}
 
-	detalhe := fmt.Sprintf("mensagem_id=%d phone=%s erro=%s", mensagemID, payload.Phone, payload.Error)
+	detalhe := fmt.Sprintf("caixa=%s mensagem_id=%d phone=%s erro=%s", cx.Codigo, mensagemID, payload.Phone, payload.Error)
 	if err := store.New(h.pool).RegistrarAlerta(ctx, store.RegistrarAlertaParams{
 		Tipo:    tipo,
 		Detalhe: naoVazio(detalhe),
@@ -434,6 +498,11 @@ const (
 // OnWhatsappDisconnected alimenta provedor_saude -- consumido pelo
 // dashboard de saude da fase 9.
 func (h *WebhookZAPI) OnWhatsappDisconnected(w http.ResponseWriter, r *http.Request) {
+	cx, ok := caixaDoWebhook(w, r)
+	if !ok {
+		return
+	}
+
 	var payload zapi.PayloadDesconexao
 	if err := json.NewDecoder(io.LimitReader(r.Body, tamanhoMaximoPayload)).Decode(&payload); err != nil {
 		http.Error(w, "payload invalido", http.StatusBadRequest)
@@ -442,7 +511,8 @@ func (h *WebhookZAPI) OnWhatsappDisconnected(w http.ResponseWriter, r *http.Requ
 
 	queries := store.New(h.pool)
 	if err := queries.RegistrarSaudeProvedor(r.Context(), store.RegistrarSaudeProvedorParams{
-		Provedor:   "zapi",
+		Provedor:   cx.Provedor,
+		CaixaID:    &cx.ID,
 		Conectado:  false,
 		UltimoErro: naoVazio(payload.Error),
 	}); err != nil {
