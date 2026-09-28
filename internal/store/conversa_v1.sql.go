@@ -55,6 +55,33 @@ func (q *Queries) BuscarConversaComContatoPorID(ctx context.Context, id int64) (
 	return i, err
 }
 
+const buscarMidiaDaMensagem = `-- name: BuscarMidiaDaMensagem :one
+SELECT tipo, texto, midia_caminho
+  FROM mensagem
+ WHERE id = $1
+   AND conversa_id = $2
+`
+
+type BuscarMidiaDaMensagemParams struct {
+	MensagemID int64 `json:"mensagem_id"`
+	ConversaID int64 `json:"conversa_id"`
+}
+
+type BuscarMidiaDaMensagemRow struct {
+	Tipo         string  `json:"tipo"`
+	Texto        *string `json:"texto"`
+	MidiaCaminho *string `json:"midia_caminho"`
+}
+
+// G10: o arquivo de uma mensagem, so se ela for da conversa pedida -- a
+// aplicacao autoriza a conversa e o gateway garante que a mensagem e dela.
+func (q *Queries) BuscarMidiaDaMensagem(ctx context.Context, arg BuscarMidiaDaMensagemParams) (BuscarMidiaDaMensagemRow, error) {
+	row := q.db.QueryRow(ctx, buscarMidiaDaMensagem, arg.MensagemID, arg.ConversaID)
+	var i BuscarMidiaDaMensagemRow
+	err := row.Scan(&i.Tipo, &i.Texto, &i.MidiaCaminho)
+	return i, err
+}
+
 const listarConversas = `-- name: ListarConversas :many
 WITH ultima_por_conversa AS (
     SELECT DISTINCT ON (m.conversa_id)

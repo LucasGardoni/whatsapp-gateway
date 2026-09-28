@@ -124,9 +124,10 @@ func run() error {
 	eventos := handler.NovoEventos(hub, assinadorSSE, cfg.CORSOrigemCRM, registroMetricas)
 	zapiAdmin := handler.NovoZAPIAdmin(caixas)
 	canais := handler.NovoCanais(pool)
-	conversas := handler.NovoConversasV1(pool, caixas)
+	conversas := handler.NovoConversasV1(pool, caixas).ComMidiaDir(cfg.MidiaDir)
 	contatos := handler.NovoContatosV1(caixas)
 	caixasV1 := handler.NovoCaixasV1(caixas)
+	midias := handler.NovoMidiasV1(cfg.MidiaDir, int64(cfg.MidiaUploadMaxBytes))
 	leads := handler.NovoLeads(pool, ingestao.RegistroPadrao())
 	metricas := handler.NovoMetricas(registroMetricas)
 	leads.VerifyToken = cfg.MetaWebhookVerifyToken
@@ -152,7 +153,7 @@ func run() error {
 	autenticadorApp := middleware.NovoAutenticadorAplicacao(queries)
 
 	router := httpserver.NovoRouter(
-		webhookZAPI, disparo, transbordo, mensagensV1, sessoesSSE, eventos, zapiAdmin, leads, canais, conversas, contatos, caixasV1, metricas,
+		webhookZAPI, disparo, transbordo, mensagensV1, sessoesSSE, eventos, zapiAdmin, leads, canais, conversas, contatos, caixasV1, midias, metricas,
 		caixas, autenticadorApp, registroMetricas,
 		cfg.WebhookPathSecret, cfg.RateLimitPorMinuto, cfg.RateLimitAplicacaoPorMinuto,
 	)

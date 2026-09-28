@@ -8,7 +8,10 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +24,7 @@ import (
 	"github.com/LucasGardoni/whatsapp-gateway/internal/caixa"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/http/middleware"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/identidade"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
 )
 
@@ -41,6 +45,9 @@ type ConversasV1 struct {
 	// identidade devolve o resolvedor de @lid DA CAIXA: o get-iswhatsapp tem
 	// de ser perguntado a instancia que vai conversar. Nil segue sem @lid.
 	identidade func(caixa.Caixa) resolvedorLid
+	// midiaDir e a raiz a que o G10 confina o arquivo servido. Vazio
+	// desliga a rota (404).
+	midiaDir string
 }
 
 // caixasV1 e o pedaco de caixa.Registro que as rotas /v1 usam.
@@ -64,6 +71,12 @@ func NovoConversasV1(pool *pgxpool.Pool, caixas *caixa.Registro) *ConversasV1 {
 			return nil
 		},
 	}
+}
+
+// ComMidiaDir liga o G10 (GET .../mensagens/{mensagem_id}/midia).
+func (h *ConversasV1) ComMidiaDir(dir string) *ConversasV1 {
+	h.midiaDir = dir
+	return h
 }
 
 // caixaDaRequisicao resolve o codigo pedido; vazio e a caixa padrao. false
@@ -359,6 +372,75 @@ func (h *ConversasV1) Mensagens(w http.ResponseWriter, r *http.Request) {
 	}
 
 	responderJSON(w, resp)
+}
+
+// Midia atende GET /v1/conversas/{id}/mensagens/{mensagem_id}/midia (G10):
+// o arquivo que o gateway baixou (entrada) ou recebeu por upload (saida).
+// A aplicacao decide quem pode ver a conversa; aqui so se confere que a
+// mensagem e dela e que o arquivo esta dentro de MIDIA_DIR. Range vale
+// (http.ServeContent), para o audio poder avancar no navegador.
+func (h *ConversasV1) Midia(w http.ResponseWriter, r *http.Request) {
+	conversaID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || conversaID <= 0 {
+		http.Error(w, "id de conversa invalido", http.StatusBadRequest)
+		return
+	}
+	mensagemID, err := strconv.ParseInt(chi.URLParam(r, "mensagem_id"), 10, 64)
+	if err != nil || mensagemID <= 0 {
+		http.Error(w, "id de mensagem invalido", http.StatusBadRequest)
+		return
+	}
+	if h.midiaDir == "" {
+		http.Error(w, "midia nao configurada", http.StatusNotFound)
+		return
+	}
+
+	linha, err := store.New(h.pool).BuscarMidiaDaMensagem(r.Context(), store.BuscarMidiaDaMensagemParams{
+		MensagemID: mensagemID,
+		ConversaID: conversaID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		http.Error(w, "mensagem nao encontrada nesta conversa", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		slog.Error("conversas v1: buscar midia", "mensagem_id", mensagemID, "erro", err)
+		http.Error(w, "erro interno", http.StatusInternalServerError)
+		return
+	}
+	if linha.MidiaCaminho == nil || *linha.MidiaCaminho == "" {
+		http.Error(w, "mensagem sem midia", http.StatusNotFound)
+		return
+	}
+
+	caminho, err := midia.ResolverArmazenado(h.midiaDir, *linha.MidiaCaminho)
+	if err != nil {
+		slog.Warn("conversas v1: midia fora do diretorio", "mensagem_id", mensagemID, "erro", err)
+		http.Error(w, "midia indisponivel", http.StatusNotFound)
+		return
+	}
+	arquivo, err := os.Open(caminho)
+	if err != nil {
+		http.Error(w, "midia indisponivel", http.StatusNotFound)
+		return
+	}
+	defer arquivo.Close()
+	info, err := arquivo.Stat()
+	if err != nil || info.IsDir() {
+		http.Error(w, "midia indisponivel", http.StatusNotFound)
+		return
+	}
+
+	nome := filepath.Base(caminho)
+	if linha.Tipo == "documento" && linha.Texto != nil && filepath.Ext(*linha.Texto) != "" {
+		nome = filepath.Base(*linha.Texto)
+	}
+
+	w.Header().Set("Content-Type", midia.MimeDoArquivo(caminho))
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": nome}))
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	http.ServeContent(w, r, "", info.ModTime(), arquivo)
 }
 
 type marcarLidaRequest struct {

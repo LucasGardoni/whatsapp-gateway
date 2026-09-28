@@ -51,6 +51,13 @@ func extensao(contentType, urlBruta string) string {
 	if ext, ok := extensoesConhecidas[mediaType]; ok {
 		return ext
 	}
+	// Demais tipos que o envio conhece (docx, xlsx, m4a...): sem isto o
+	// anexo recebido virava .bin e ninguem abria.
+	for ext, mime := range mimePorExtensao {
+		if mime == mediaType {
+			return ext
+		}
+	}
 	if u, err := url.Parse(urlBruta); err == nil {
 		if ext := filepath.Ext(u.Path); ext != "" {
 			return ext

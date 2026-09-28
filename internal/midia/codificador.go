@@ -43,6 +43,22 @@ var mimePorExtensao = map[string]string{
 	".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
 
+// ExtensaoAceita diz se o arquivo tem uma extensao que o envio sabe
+// classificar. Fora da lista o WhatsApp receberia octet-stream.
+func ExtensaoAceita(nome string) bool {
+	_, ok := mimePorExtensao[strings.ToLower(filepath.Ext(nome))]
+	return ok
+}
+
+// MimeDoArquivo e o content-type pela extensao; fora da lista,
+// application/octet-stream.
+func MimeDoArquivo(nome string) string {
+	if mime, ok := mimePorExtensao[strings.ToLower(filepath.Ext(nome))]; ok {
+		return mime
+	}
+	return "application/octet-stream"
+}
+
 // ErroForaDoDiretorio indica tentativa de ler arquivo fora de MIDIA_DIR.
 // Erro proprio para o worker poder classificar como falha definitiva: nao
 // adianta retentar um caminho que nunca vai ser permitido.
@@ -83,6 +99,22 @@ func ResolverDentroDe(raiz, caminho string) (string, error) {
 	}
 
 	return alvoAbs, nil
+}
+
+// ResolverArmazenado resolve o midia_caminho gravado em mensagem, que tem
+// duas origens: o Baixador grava MIDIA_DIR + nome (relativo ao diretorio
+// de trabalho, ou absoluto), o upload do G9 grava relativo a MIDIA_DIR.
+// Tenta primeiro como esta e cai no relativo a raiz; os dois ficam
+// confinados a raiz.
+func ResolverArmazenado(raiz, caminho string) (string, error) {
+	if abs, err := filepath.Abs(filepath.Clean(caminho)); err == nil {
+		if dentro, err := ResolverDentroDe(raiz, abs); err == nil {
+			if _, err := os.Stat(dentro); err == nil {
+				return dentro, nil
+			}
+		}
+	}
+	return ResolverDentroDe(raiz, caminho)
 }
 
 // CodificarBase64 le um arquivo de dentro de raiz (MIDIA_DIR) e devolve

@@ -30,6 +30,10 @@ type Config struct {
 
 	MidiaDir string
 
+	// MidiaUploadMaxBytes limita POST /v1/midias (G9). O teto pratico e o
+	// do WhatsApp para documento; 16 MiB cobre os PDFs de viagem com folga.
+	MidiaUploadMaxBytes int
+
 	PublicBaseURL string
 
 	// CORSOrigemCRM e a origem exata do CRM (esquema://host:porta) que pode
@@ -130,7 +134,8 @@ func Load() (*Config, error) {
 
 		MetaWebhookVerifyToken: os.Getenv("META_WEBHOOK_VERIFY_TOKEN"),
 
-		MidiaDir: getEnv("MIDIA_DIR", "./dados/midia"),
+		MidiaDir:            getEnv("MIDIA_DIR", "./dados/midia"),
+		MidiaUploadMaxBytes: getInt("MIDIA_UPLOAD_MAX_BYTES", 16<<20),
 
 		PublicBaseURL: getEnv("PUBLIC_BASE_URL", "http://localhost:8080"),
 

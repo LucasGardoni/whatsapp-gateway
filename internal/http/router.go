@@ -45,6 +45,7 @@ func NovoRouter(
 	conversas *handler.ConversasV1,
 	contatos *handler.ContatosV1,
 	caixasV1 *handler.CaixasV1,
+	midias *handler.MidiasV1,
 	metricas *handler.Metricas,
 	// caixas resolve o segredo do path dos webhooks da z-api em caixa (G1):
 	// cada numero tem o seu, e e ele que diz de onde veio o callback.
@@ -227,6 +228,8 @@ func NovoRouter(
 			// o conversa_id que POST /v1/mensagens exige.
 			r.Get("/v1/conversas", conversas.Listar)
 			r.Get("/v1/conversas/{id}/mensagens", conversas.Mensagens)
+			// G10: o arquivo de uma mensagem, para a aplicacao mostrar o anexo.
+			r.Get("/v1/conversas/{id}/mensagens/{mensagem_id}/midia", conversas.Midia)
 			// G6: leitura por aplicacao, alimenta nao_lidas de GET /v1/conversas.
 			r.Post("/v1/conversas/{id}/lida", conversas.MarcarLida)
 			// G4: conversa com numero que nunca falou com a caixa.
@@ -235,6 +238,8 @@ func NovoRouter(
 			r.Get("/v1/contatos", contatos.Listar)
 			// G1: numeros ativos, para a aplicacao ligar o cadastro dela.
 			r.Get("/v1/caixas", caixasV1.Listar)
+			// G9: upload do anexo; devolve o midia_caminho de POST /v1/mensagens.
+			r.Post("/v1/midias", midias.Criar)
 		})
 	}
 

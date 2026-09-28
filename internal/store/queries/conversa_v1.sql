@@ -122,3 +122,11 @@ SELECT pg_advisory_xact_lock(hashtext('abrir_conversa:' || sqlc.arg(telefone_e16
 -- G4. O nome informado por quem abre a conversa so vale para lead sem nome:
 -- o nome de perfil que o WhatsApp mandou antes continua sendo o dado.
 UPDATE lead SET nome = sqlc.arg(nome) WHERE id = sqlc.arg(id) AND (nome IS NULL OR nome = '');
+
+-- name: BuscarMidiaDaMensagem :one
+-- G10: o arquivo de uma mensagem, so se ela for da conversa pedida -- a
+-- aplicacao autoriza a conversa e o gateway garante que a mensagem e dela.
+SELECT tipo, texto, midia_caminho
+  FROM mensagem
+ WHERE id = sqlc.arg(mensagem_id)
+   AND conversa_id = sqlc.arg(conversa_id);

@@ -312,7 +312,9 @@ func classificarConteudo(p zapi.PayloadRecebido) (tipo, texto, midiaURL, downloa
 	case p.Video != nil:
 		return "video", p.Video.Caption, p.Video.URL, ""
 	case p.Document != nil:
-		return "documento", "", p.Document.URL, ""
+		// O nome do arquivo vai no texto: e o que o contato ve no WhatsApp e
+		// o G10 devolve como filename.
+		return "documento", p.Document.FileName, p.Document.URL, ""
 	default:
 		return "outro", "", "", ""
 	}
