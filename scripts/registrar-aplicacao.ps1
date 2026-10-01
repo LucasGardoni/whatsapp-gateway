@@ -39,7 +39,7 @@ if (-not $DatabaseUrl) {
 # que sobrevivem ao header mas quebram na primeira vez que alguem colar o
 # valor numa URL de teste -- e o sintoma vira "401 sem motivo".
 $bytes = [byte[]]::new(32)
-[System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
 $token = [Convert]::ToBase64String($bytes).Replace('+', '-').Replace('/', '_').TrimEnd('=')
 
 $sha = [System.Security.Cryptography.SHA256]::Create()

@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/LucasGardoni/whatsapp-gateway/internal/observabilidade"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
 )
 
@@ -136,6 +137,7 @@ func (a *AutenticadorAplicacao) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
+		observabilidade.MarcarAplicacao(r.Context(), app.Codigo)
 		next.ServeHTTP(w, r.WithContext(ComAplicacao(r.Context(), *app)))
 	})
 }

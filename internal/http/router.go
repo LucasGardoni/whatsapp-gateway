@@ -12,6 +12,7 @@ import (
 	"github.com/LucasGardoni/whatsapp-gateway/internal/http/handler"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/http/middleware"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/metrica"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/observabilidade"
 )
 
 // NovoRouter registra as rotas HTTP do gateway. Os tres webhooks da Z-API
@@ -60,6 +61,10 @@ func NovoRouter(
 	// visibilidade, nao de seguranca, e nao ha por que fechar o
 	// barramento por causa dela.
 	registro *metrica.Registro,
+	// coletor mede toda requisicao para o painel de observabilidade, e
+	// observ serve esse painel. Nil desliga os dois.
+	coletor *observabilidade.Coletor,
+	observ *handler.Observabilidade,
 	segredoWebhook string,
 	rateLimitPorMinuto int,
 	rateLimitAplicacaoPorMinuto int,
@@ -69,11 +74,17 @@ func NovoRouter(
 	// correlacao antes de tudo: vale para toda rota, inclusive as que
 	// respondem erro, que sao justamente as que se quer investigar depois.
 	r.Use(middleware.RequestID)
+	if coletor != nil {
+		r.Use(coletor.Middleware)
+	}
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	if observ != nil {
+		r.Get("/health/ready", observ.Prontidao)
+	}
 
 	// endpoints publicos (sem token de servico) sao os que ficam expostos
 	// pra internet -- so eles levam limite por ip (fase 12). /health (load
@@ -187,6 +198,13 @@ func NovoRouter(
 			// da secao 2 furada pela porta dos fundos.
 			if metricas != nil {
 				r.Get("/metrics", metricas.Servir)
+			}
+
+			// painel de saude e desempenho (conexoes SSE, latencia por
+			// rota, pool, fila, z-api). Mesma regra de /metrics.
+			if observ != nil {
+				r.Get("/api/observabilidade", observ.Retrato)
+				r.Get("/api/observabilidade/serie", observ.Serie)
 			}
 		})
 	}

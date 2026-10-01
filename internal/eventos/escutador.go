@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -91,6 +92,42 @@ type Escutador struct {
 	// Podado a cada varredura, entao guarda no maximo o trafego de uma
 	// janela de reconciliacao.
 	entregues map[int64]struct{}
+
+	mu     sync.Mutex
+	estado Estado
+}
+
+// Estado e o retrato do escutador para o painel de observabilidade.
+type Estado struct {
+	Conectado      bool      `json:"conectado"`
+	ConectadoDesde time.Time `json:"conectado_desde,omitzero"`
+	Reconexoes     uint64    `json:"reconexoes"`
+	UltimoErro     string    `json:"ultimo_erro,omitempty"`
+	UltimoErroEm   time.Time `json:"ultimo_erro_em,omitzero"`
+	// PorNotificacao e PorVarredura dizem por qual camada cada evento saiu.
+	// Varredura alta com a conexao de pe e NOTIFY se perdendo.
+	PorNotificacao    uint64    `json:"por_notificacao"`
+	PorVarredura      uint64    `json:"por_varredura"`
+	UltimaNotificacao time.Time `json:"ultima_notificacao,omitzero"`
+	UltimaVarredura   time.Time `json:"ultima_varredura,omitzero"`
+	// AtrasoTotalMs soma, por entrega, o intervalo entre gravar o evento e
+	// entrega-lo ao hub. Cumulativo: quem le tira a media do intervalo pela
+	// diferenca entre duas leituras.
+	AtrasoTotalMs float64 `json:"-"`
+	Entregas      uint64  `json:"-"`
+	Cursor        int64   `json:"cursor"`
+}
+
+func (e *Escutador) Estado() Estado {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.estado
+}
+
+func (e *Escutador) alterarEstado(f func(*Estado)) {
+	e.mu.Lock()
+	f(&e.estado)
+	e.mu.Unlock()
 }
 
 func NovoEscutador(dsn string, leitor Leitor, hub *sse.Hub, cfg Config) *Escutador {
@@ -155,6 +192,14 @@ func (e *Escutador) escutar(ctx context.Context, notificacoes chan<- int64, reco
 		if ctx.Err() != nil {
 			return
 		}
+		e.alterarEstado(func(s *Estado) {
+			s.Conectado = false
+			s.Reconexoes++
+			if err != nil {
+				s.UltimoErro = err.Error()
+				s.UltimoErroEm = time.Now()
+			}
+		})
 		slog.Error("eventos: conexao de LISTEN caiu, reconectando", "espera", espera, "erro", err)
 
 		select {
@@ -179,6 +224,10 @@ func (e *Escutador) cicloDeConexao(ctx context.Context, notificacoes chan<- int6
 		return fmt.Errorf("LISTEN %s: %w", canalNotify, err)
 	}
 	slog.Info("eventos: escutando", "canal", canalNotify)
+	e.alterarEstado(func(s *Estado) {
+		s.Conectado = true
+		s.ConectadoDesde = time.Now()
+	})
 
 	// avisa ANTES do primeiro WaitForNotification: o que entrou no banco
 	// enquanto esta conexao nao existia so chega pelo catch-up.
@@ -229,7 +278,7 @@ func (e *Escutador) entregarPorID(ctx context.Context, id int64) {
 		slog.Error("eventos: buscar evento notificado", "evento_id", id, "erro", err)
 		return
 	}
-	e.publicar(linha)
+	e.publicar(linha, false)
 }
 
 // varrer e o catch-up e a reconciliacao (secao 7.2, itens 2 e 3).
@@ -251,7 +300,7 @@ func (e *Escutador) varrer(ctx context.Context) {
 	novoCursor := e.ultimoID
 	for _, linha := range linhas {
 		if _, ja := e.entregues[linha.ID]; !ja {
-			e.publicar(linha)
+			e.publicar(linha, true)
 		}
 		if linha.CriadoEm.Valid && linha.CriadoEm.Time.Before(corte) {
 			novoCursor = linha.ID
@@ -259,6 +308,10 @@ func (e *Escutador) varrer(ctx context.Context) {
 	}
 
 	e.ultimoID = novoCursor
+	e.alterarEstado(func(s *Estado) {
+		s.UltimaVarredura = time.Now()
+		s.Cursor = novoCursor
+	})
 	for id := range e.entregues {
 		if id <= e.ultimoID {
 			delete(e.entregues, id)
@@ -278,7 +331,7 @@ func (e *Escutador) limpar(ctx context.Context) {
 	}
 }
 
-func (e *Escutador) publicar(linha store.Evento) {
+func (e *Escutador) publicar(linha store.Evento, porVarredura bool) {
 	var evento sse.Evento
 	if err := json.Unmarshal(linha.Payload, &evento); err != nil {
 		slog.Error("eventos: payload ilegivel", "evento_id", linha.ID, "erro", err)
@@ -293,4 +346,22 @@ func (e *Escutador) publicar(linha store.Evento) {
 		e.hub.Publicar(linha.Chaves, evento)
 	}
 	e.entregues[linha.ID] = struct{}{}
+
+	agora := time.Now()
+	e.alterarEstado(func(s *Estado) {
+		if porVarredura {
+			s.PorVarredura++
+		} else {
+			s.PorNotificacao++
+			s.UltimaNotificacao = agora
+		}
+		if linha.CriadoEm.Valid {
+			atraso := float64(agora.Sub(linha.CriadoEm.Time).Microseconds()) / 1000
+			if atraso < 0 {
+				atraso = 0
+			}
+			s.AtrasoTotalMs += atraso
+			s.Entregas++
+		}
+	})
 }

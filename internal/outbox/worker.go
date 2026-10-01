@@ -51,6 +51,15 @@ type Config struct {
 	MidiaDir string
 	// EventosWhatsApp entrega os eventos de status tambem por caixa (G8).
 	EventosWhatsApp eventos.WhatsApp
+	// Observador recebe o desfecho de cada mensagem e o batimento de cada
+	// ciclo (painel de observabilidade). Nil desliga.
+	Observador Observador
+}
+
+// Observador e o que o painel de observabilidade precisa do outbox.
+type Observador interface {
+	EnvioOutbox(caixa, resultado string, duracao time.Duration)
+	Batimento(nome string, inicio time.Time, err error)
 }
 
 func (c Config) comDefaults() Config {
@@ -109,8 +118,13 @@ func (w *Worker) Executar(ctx context.Context) error {
 			// senao uma mensagem fica presa em 'enviando' sem necessidade.
 			// TimeoutCiclo garante que ele nao trave para sempre.
 			cicloCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), w.cfg.TimeoutCiclo)
-			if err := w.rodarCiclo(cicloCtx); err != nil {
+			inicio := time.Now()
+			err := w.rodarCiclo(cicloCtx)
+			if err != nil {
 				slog.Error("outbox: ciclo falhou", "erro", err)
+			}
+			if w.cfg.Observador != nil {
+				w.cfg.Observador.Batimento("outbox", inicio, err)
 			}
 			cancel()
 		}
@@ -168,11 +182,22 @@ func (w *Worker) rodarCaixa(ctx context.Context, c caixa.Caixa) error {
 }
 
 func (w *Worker) processarMensagem(ctx context.Context, c caixa.Caixa, p provedor.Provedor, m store.SelecionarPendentesParaEnvioRow) {
+	if w.cfg.Observador != nil {
+		inicio := time.Now()
+		resultado := w.processar(ctx, c, p, m)
+		w.cfg.Observador.EnvioOutbox(c.Codigo, resultado, time.Since(inicio))
+		return
+	}
+	w.processar(ctx, c, p, m)
+}
+
+// processar devolve o desfecho: enviada, retentativa, falha ou bloqueada.
+func (w *Worker) processar(ctx context.Context, c caixa.Caixa, p provedor.Provedor, m store.SelecionarPendentesParaEnvioRow) string {
 	destino, err := destinatario(m)
 	if err != nil {
 		slog.Error("outbox: mensagem sem destinatario valido, falha definitiva", "mensagem_id", m.ID, "erro", err)
 		w.marcarFalhaDefinitiva(ctx, c, m, err)
-		return
+		return "falha"
 	}
 
 	// legenda vale tanto pro corpo do texto quanto pro caption de uma midia
@@ -189,7 +214,7 @@ func (w *Worker) processarMensagem(ctx context.Context, c caixa.Caixa, p provedo
 		if veredito.Bloqueado() {
 			slog.Warn("outbox: mensagem bloqueada pelo dlp", "mensagem_id", m.ID)
 			w.marcarBloqueada(ctx, c, m)
-			return
+			return "bloqueada"
 		}
 	}
 
@@ -200,11 +225,10 @@ func (w *Worker) processarMensagem(ctx context.Context, c caixa.Caixa, p provedo
 	if !valido {
 		slog.Error("outbox: mensagem invalida para envio, falha definitiva", "mensagem_id", m.ID, "erro", err)
 		w.marcarFalhaDefinitiva(ctx, c, m, err)
-		return
+		return "falha"
 	}
 	if err != nil {
-		w.tratarErroEnvio(ctx, c, m, err)
-		return
+		return w.tratarErroEnvio(ctx, c, m, err)
 	}
 
 	if err := w.fila.MarcarMensagemEnviada(ctx, store.MarcarMensagemEnviadaParams{
@@ -213,9 +237,10 @@ func (w *Worker) processarMensagem(ctx context.Context, c caixa.Caixa, p provedo
 		ZaapID:        naoVazio(resultado.ZaapID),
 	}); err != nil {
 		slog.Error("outbox: falha ao marcar mensagem como enviada", "mensagem_id", m.ID, "erro", err)
-		return
+		return "enviada"
 	}
 	w.publicar(ctx, c, m, "enviada")
+	return "enviada"
 }
 
 // enviar despacha para o endpoint certo conforme o tipo da mensagem.
@@ -255,7 +280,7 @@ func (w *Worker) enviar(ctx context.Context, p provedor.Provedor, m store.Seleci
 	return resultado, err, true
 }
 
-func (w *Worker) tratarErroEnvio(ctx context.Context, c caixa.Caixa, m store.SelecionarPendentesParaEnvioRow, err error) {
+func (w *Worker) tratarErroEnvio(ctx context.Context, c caixa.Caixa, m store.SelecionarPendentesParaEnvioRow, err error) string {
 	retentavel := true // erro nao classificado: mais seguro reenfileirar do que descartar
 	var classificado provedor.ErroClassificado
 	if errors.As(err, &classificado) {
@@ -266,7 +291,7 @@ func (w *Worker) tratarErroEnvio(ctx context.Context, c caixa.Caixa, m store.Sel
 	if !retentavel || tentativasApos >= w.cfg.MaxTentativas {
 		slog.Error("outbox: falha definitiva no envio", "caixa", c.Codigo, "mensagem_id", m.ID, "tentativas", tentativasApos, "erro", err)
 		w.marcarFalhaDefinitiva(ctx, c, m, err)
-		return
+		return "falha"
 	}
 
 	// o atraso vai como intervalo e o tentar_em e calculado no relogio do
@@ -278,6 +303,7 @@ func (w *Worker) tratarErroEnvio(ctx context.Context, c caixa.Caixa, m store.Sel
 	}); err != nil {
 		slog.Error("outbox: falha ao reagendar mensagem", "mensagem_id", m.ID, "erro", err)
 	}
+	return "retentativa"
 }
 
 func (w *Worker) marcarFalhaDefinitiva(ctx context.Context, c caixa.Caixa, m store.SelecionarPendentesParaEnvioRow, causa error) {

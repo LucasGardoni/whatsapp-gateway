@@ -89,6 +89,7 @@ type Registro struct {
 	// inventado forcaria uma leitura do banco.
 	recargaMinima time.Duration
 	baseURLZAPI   string
+	observador    ObservadorProvedor
 
 	mu          sync.Mutex
 	carregadoEm time.Time
@@ -222,10 +223,16 @@ func (r *Registro) carregar(ctx context.Context, forcar bool) error {
 // fake.Provedor proprio, que guarda o que "enviou" -- serve para ter um
 // segundo numero em dev sem uma segunda instancia z-api.
 func (r *Registro) Provedor(c Caixa) provedor.Provedor {
+	var p provedor.Provedor
 	if c.Provedor == ProvedorFake {
-		return r.Fake(c)
+		p = r.Fake(c)
+	} else {
+		p = r.clientesDe(c).zapi
 	}
-	return r.clientesDe(c).zapi
+	if r.observador != nil {
+		return provedorMedido{Provedor: p, caixa: c.Codigo, observador: r.observador}
+	}
+	return p
 }
 
 // Fake devolve o provedor em memoria da caixa fake.

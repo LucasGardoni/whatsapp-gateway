@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/LucasGardoni/whatsapp-gateway/internal/ingestao"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/metrica"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/observabilidade"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/outbox"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/retencao"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/saude"
@@ -70,7 +72,13 @@ func run() error {
 	}); err != nil {
 		return fmt.Errorf("sincronizar caixa semente %q: %w", cfg.CaixaCodigo, err)
 	}
-	caixas := caixa.NovoRegistro(queries, cfg.CaixaCodigo)
+	// coletor do painel de observabilidade: nasce antes de tudo que ele
+	// mede, e as fontes lidas no retrato sao ligadas mais abaixo.
+	coletor := observabilidade.NovoColetor()
+	coletor.EsperarBatimento("outbox", 5*time.Second)
+	coletor.EsperarBatimento("saude", 30*time.Second)
+
+	caixas := caixa.NovoRegistro(queries, cfg.CaixaCodigo).ComObservador(coletor)
 	if _, err := caixas.Ativas(ctx); err != nil {
 		return fmt.Errorf("carregar caixas: %w", err)
 	}
@@ -94,9 +102,9 @@ func run() error {
 	// da caixa (ver eventos.WhatsApp).
 	eventosWhatsApp := eventos.WhatsApp{Aplicacoes: cfg.EventosWhatsAppAplicacoes}
 
-	worker := outbox.NovoWorker(queries, caixas, motorDLP, outbox.Config{MidiaDir: cfg.MidiaDir, EventosWhatsApp: eventosWhatsApp})
+	worker := outbox.NovoWorker(queries, caixas, motorDLP, outbox.Config{MidiaDir: cfg.MidiaDir, EventosWhatsApp: eventosWhatsApp, Observador: coletor})
 
-	monitorSaude := saude.NovoMonitor(caixas, queries, saude.Config{})
+	monitorSaude := saude.NovoMonitor(caixas, queries, saude.Config{Observador: coletor})
 
 	// o mesmo monitor cobre os dois alertas de volume: o da empresa
 	// (destinatarios distintos, risco de banimento do numero) e o por
@@ -121,7 +129,7 @@ func run() error {
 	transbordo := handler.NovoTransbordo(pool)
 	mensagensV1 := handler.NovoMensagensV1(pool, cfg.MidiaDir, cfg.LimiteConteudoCifradoBytes, registroMetricas).ComEventosWhatsApp(eventosWhatsApp)
 	sessoesSSE := handler.NovoSessoesSSE(assinadorSSE)
-	eventos := handler.NovoEventos(hub, assinadorSSE, cfg.CORSOrigemCRM, registroMetricas)
+	eventos := handler.NovoEventos(hub, assinadorSSE, cfg.CORSOrigemCRM, registroMetricas).ComObservador(coletor)
 	zapiAdmin := handler.NovoZAPIAdmin(caixas)
 	canais := handler.NovoCanais(pool)
 	conversas := handler.NovoConversasV1(pool, caixas).ComMidiaDir(cfg.MidiaDir)
@@ -130,6 +138,16 @@ func run() error {
 	midias := handler.NovoMidiasV1(cfg.MidiaDir, int64(cfg.MidiaUploadMaxBytes))
 	leads := handler.NovoLeads(pool, ingestao.RegistroPadrao())
 	metricas := handler.NovoMetricas(registroMetricas)
+	bancoObserv := observabilidade.NovoBanco(pool)
+	coletor.ComFontes(observabilidade.Fontes{
+		Hub:       hub,
+		Escutador: escutadorEventos,
+		Banco:     bancoObserv,
+		Metricas:  registroMetricas,
+		Instancia: identificarInstancia(cfg.Port),
+		Versao:    versaoBinario(),
+	})
+	observ := handler.NovoObservabilidade(coletor, bancoObserv, escutadorEventos)
 	leads.VerifyToken = cfg.MetaWebhookVerifyToken
 
 	if cfg.WebhookPathSecret == "" {
@@ -154,7 +172,7 @@ func run() error {
 
 	router := httpserver.NovoRouter(
 		webhookZAPI, disparo, transbordo, mensagensV1, sessoesSSE, eventos, zapiAdmin, leads, canais, conversas, contatos, caixasV1, midias, metricas,
-		caixas, autenticadorApp, registroMetricas,
+		caixas, autenticadorApp, registroMetricas, coletor, observ,
 		cfg.WebhookPathSecret, cfg.RateLimitPorMinuto, cfg.RateLimitAplicacaoPorMinuto,
 	)
 
@@ -207,6 +225,12 @@ func run() error {
 	go func() {
 		slog.Info("monitor de alerta de volume iniciado")
 		alertaErr <- monitorAlerta.Executar(ctx)
+	}()
+
+	// o amostrador nao tem caminho de erro: painel parado nao derruba o
+	// gateway, entao ele nao entra no select abaixo.
+	go func() {
+		_ = coletor.Executar(ctx)
 	}()
 
 	retencaoErr := make(chan error, 1)
@@ -285,4 +309,38 @@ func run() error {
 
 	slog.Info("gateway encerrado com sucesso")
 	return nil
+}
+
+// identificarInstancia distingue as instancias atras do proxy: cada uma
+// responde o proprio retrato.
+func identificarInstancia(porta string) string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "desconhecido"
+	}
+	return fmt.Sprintf("%s:%s/pid-%d", host, porta, os.Getpid())
+}
+
+// versaoBinario e o commit embutido pelo go build (vcs.revision), com
+// marca de arvore suja. Vazio quando compilado fora do repositorio.
+func versaoBinario() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	var revisao, sujo string
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			revisao = s.Value
+		case "vcs.modified":
+			if s.Value == "true" {
+				sujo = "+alteracoes"
+			}
+		}
+	}
+	if len(revisao) > 8 {
+		revisao = revisao[:8]
+	}
+	return revisao + sujo
 }

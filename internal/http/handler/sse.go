@@ -35,6 +35,26 @@ type Eventos struct {
 	// que interessa aqui e o gauge: quantas telas estao penduradas nesta
 	// instancia agora.
 	registro *metrica.Registro
+	// observador e o painel de observabilidade: vida de cada conexao e
+	// recusas. Nil desliga.
+	observador ObservadorSSE
+}
+
+// ObservadorSSE e o que o painel de observabilidade precisa do stream.
+type ObservadorSSE interface {
+	SSEConectou(app string) (encerrar func())
+	SSERecusada(motivo string)
+}
+
+func (h *Eventos) ComObservador(o ObservadorSSE) *Eventos {
+	h.observador = o
+	return h
+}
+
+func (h *Eventos) recusar(motivo string) {
+	if h.observador != nil {
+		h.observador.SSERecusada(motivo)
+	}
 }
 
 func NovoEventos(hub *sse.Hub, assinador *sse.AssinadorSessao, origens []string, registro *metrica.Registro) *Eventos {
@@ -61,6 +81,7 @@ func (h *Eventos) Servir(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.assinador == nil {
+		h.recusar("tempo_real_desligado")
 		http.Error(w, "tempo real nao configurado", http.StatusServiceUnavailable)
 		return
 	}
@@ -71,6 +92,7 @@ func (h *Eventos) Servir(w http.ResponseWriter, r *http.Request) {
 	// permissao decidida pela aplicacao (secao 1 do plano).
 	sessao, err := h.assinador.Validar(r.URL.Query().Get("token"))
 	if err != nil {
+		h.recusar("token_invalido")
 		http.Error(w, "token invalido ou expirado", http.StatusUnauthorized)
 		return
 	}
@@ -92,6 +114,9 @@ func (h *Eventos) Servir(w http.ResponseWriter, r *http.Request) {
 	if h.registro != nil {
 		h.registro.SSEAberta(sessao.App, 1)
 		defer h.registro.SSEAberta(sessao.App, -1)
+	}
+	if h.observador != nil {
+		defer h.observador.SSEConectou(sessao.App)()
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")

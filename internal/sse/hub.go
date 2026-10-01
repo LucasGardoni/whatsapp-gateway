@@ -15,6 +15,7 @@
 package sse
 
 import (
+	"sort"
 	"strings"
 	"sync"
 )
@@ -64,10 +65,92 @@ type Hub struct {
 	mu sync.Mutex
 	// chave = "aplicacao:destino" (ver ChaveDestino).
 	assinantes map[string]map[chan Evento]struct{}
+	// por aplicacao (o prefixo da chave), nunca por destino: e o que o
+	// painel precisa para ver assinante lento sem saber quem e.
+	entregues   map[string]uint64
+	descartados map[string]uint64
 }
 
 func NovoHub() *Hub {
-	return &Hub{assinantes: make(map[string]map[chan Evento]struct{})}
+	return &Hub{
+		assinantes:  make(map[string]map[chan Evento]struct{}),
+		entregues:   make(map[string]uint64),
+		descartados: make(map[string]uint64),
+	}
+}
+
+// aplicacaoDaChave e o prefixo de "aplicacao:destino".
+func aplicacaoDaChave(chave string) string {
+	if i := strings.IndexByte(chave, ':'); i >= 0 {
+		return chave[:i]
+	}
+	return chave
+}
+
+// entregar exige h.mu.
+func (h *Hub) entregar(chave string, canal chan Evento, evento Evento) {
+	select {
+	case canal <- evento:
+		h.entregues[aplicacaoDaChave(chave)]++
+	default:
+		// assinante lento -- descarta em vez de travar o publicador.
+		// o EventSource reconecta e a tela busca o estado atual de novo.
+		h.descartados[aplicacaoDaChave(chave)]++
+	}
+}
+
+// EstatisticaApp e o retrato do hub para uma aplicacao. Destinos sao
+// contados, nunca listados.
+type EstatisticaApp struct {
+	Aplicacao       string `json:"aplicacao"`
+	Destinos        int    `json:"destinos"`
+	Conexoes        int    `json:"conexoes"`
+	MaiorPorDestino int    `json:"maior_por_destino"`
+	// DestinosComVarias sao destinos com 3+ conexoes: a mesma pessoa com
+	// varias abas, cada uma segurando um stream.
+	DestinosComVarias int    `json:"destinos_com_varias"`
+	Entregues         uint64 `json:"eventos_entregues"`
+	Descartados       uint64 `json:"eventos_descartados"`
+}
+
+// Estatisticas devolve o retrato por aplicacao, ordenado por codigo.
+func (h *Hub) Estatisticas() []EstatisticaApp {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	porApp := map[string]*EstatisticaApp{}
+	de := func(app string) *EstatisticaApp {
+		e, ok := porApp[app]
+		if !ok {
+			e = &EstatisticaApp{Aplicacao: app}
+			porApp[app] = e
+		}
+		return e
+	}
+	for chave, canais := range h.assinantes {
+		e := de(aplicacaoDaChave(chave))
+		e.Destinos++
+		e.Conexoes += len(canais)
+		if len(canais) > e.MaiorPorDestino {
+			e.MaiorPorDestino = len(canais)
+		}
+		if len(canais) >= 3 {
+			e.DestinosComVarias++
+		}
+	}
+	for app, n := range h.entregues {
+		de(app).Entregues = n
+	}
+	for app, n := range h.descartados {
+		de(app).Descartados = n
+	}
+
+	saida := make([]EstatisticaApp, 0, len(porApp))
+	for _, e := range porApp {
+		saida = append(saida, *e)
+	}
+	sort.Slice(saida, func(i, k int) bool { return saida[i].Aplicacao < saida[k].Aplicacao })
+	return saida
 }
 
 // Assinar registra um canal de eventos para a chave "aplicacao:destino".
@@ -109,12 +192,7 @@ func (h *Hub) Publicar(chaves []string, evento Evento) {
 	defer h.mu.Unlock()
 	for _, chave := range chaves {
 		for canal := range h.assinantes[chave] {
-			select {
-			case canal <- evento:
-			default:
-				// assinante lento -- descarta em vez de travar o publicador.
-				// o EventSource reconecta e a tela busca o estado atual de novo.
-			}
+			h.entregar(chave, canal, evento)
 		}
 	}
 }
@@ -149,10 +227,7 @@ func (h *Hub) PublicarNaAplicacao(app string, evento Evento) {
 			continue
 		}
 		for canal := range canais {
-			select {
-			case canal <- evento:
-			default:
-			}
+			h.entregar(chave, canal, evento)
 		}
 	}
 }

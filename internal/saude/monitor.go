@@ -22,6 +22,15 @@ type Registrador interface {
 
 type Config struct {
 	Intervalo time.Duration
+	// Observador recebe cada verificacao (painel de observabilidade). Nil
+	// desliga.
+	Observador Observador
+}
+
+// Observador e o que o painel de observabilidade precisa do monitor.
+type Observador interface {
+	SaudeCaixa(caixa string, conectado bool, latencia time.Duration, detalhe string)
+	Batimento(nome string, inicio time.Time, err error)
 }
 
 func (c Config) comDefaults() Config {
@@ -63,7 +72,11 @@ func (m *Monitor) Executar(ctx context.Context) error {
 }
 
 func (m *Monitor) verificar(ctx context.Context) {
+	inicio := time.Now()
 	caixas, err := m.caixas.Ativas(ctx)
+	if m.cfg.Observador != nil {
+		defer func() { m.cfg.Observador.Batimento("saude", inicio, err) }()
+	}
 	if err != nil {
 		slog.Error("saude: falha ao listar caixas", "erro", err)
 		return
@@ -99,6 +112,14 @@ func (m *Monitor) verificarCaixa(ctx context.Context, c caixa.Caixa) {
 		if status.Detalhe != "" {
 			arg.UltimoErro = &status.Detalhe
 		}
+	}
+
+	if m.cfg.Observador != nil {
+		detalhe := ""
+		if arg.UltimoErro != nil {
+			detalhe = *arg.UltimoErro
+		}
+		m.cfg.Observador.SaudeCaixa(c.Codigo, arg.Conectado, time.Duration(latenciaMs)*time.Millisecond, detalhe)
 	}
 
 	if err := m.registro.RegistrarSaudeProvedor(ctx, arg); err != nil {
