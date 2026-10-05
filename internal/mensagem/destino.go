@@ -37,6 +37,9 @@ type Requisicao struct {
 	Tipo         string `json:"tipo"`
 	Texto        string `json:"texto"`
 	MidiaCaminho string `json:"midia_caminho"`
+	// DLPIsentoPor identifica quem pediu a isencao do DLP (ex.: "usuario:808",
+	// "sistema:PROGRAMADA"). So vale para aplicacao com pode_isentar_dlp.
+	DLPIsentoPor string `json:"dlp_isento_por"`
 
 	// canal=interno -- opaco de ponta a ponta. ConteudoCifrado chega em
 	// base64 (nonce || ciphertext) so porque JSON nao carrega bytes.

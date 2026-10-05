@@ -21,6 +21,11 @@ var (
 	regexClusterNumerico = regexp.MustCompile(`[\d\s\-.()/:]+`)
 
 	regexNumeroPorExtenso = regexp.MustCompile(`\b(zero|um|uma|dois|duas|tres|quatro|cinco|seis|sete|oito|nove)\b`)
+
+	// regexNaoTelefone casa numeros com formato proprio que nao sao telefone
+	// (data, hora, cep, valor em reais) -- sem isso "05/10/2026" ou
+	// "36889-188" viram cluster de 8 digitos e bloqueiam como telefone.
+	regexNaoTelefone = regexp.MustCompile(`\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}:\d{2}(?::\d{2})?\b|\b\d{5}-\d{3}\b|r\$\s*[\d.]+(?:,\d{2})?`)
 )
 
 var digitoPorExtenso = map[string]string{
@@ -90,9 +95,12 @@ func detectarPix(texto string) (float64, bool) {
 // ("zap: 32 nove nove"). A estrategia e converter numero por extenso em
 // digito e depois procurar clusters continuos de digito+separador -- uma
 // letra no meio quebra o cluster, o que naturalmente evita juntar "lote 32"
-// com "bloco 9" em um numero so.
+// com "bloco 9" em um numero so. Link sai antes: o de dominio nao permitido
+// ja cai em link_externo, e o permitido traz datas e ids na query string.
 func detectarTelefone(textoOriginal string) (float64, bool) {
-	texto := substituirNumerosPorExtenso(normalizarTexto(textoOriginal))
+	texto := regexURL.ReplaceAllString(normalizarTexto(textoOriginal), " x ")
+	texto = regexNaoTelefone.ReplaceAllString(texto, " x ")
+	texto = substituirNumerosPorExtenso(texto)
 
 	melhor := 0.0
 	achou := false

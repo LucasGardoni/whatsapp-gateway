@@ -15,7 +15,10 @@ SELECT * FROM conversa WHERE id = $1;
 -- aplicacao_id e a procedencia (barramento, fase 1): vem do token
 -- autenticado, nunca do corpo. Nulavel enquanto o caminho legado
 -- (ExigirTokenServico) existir -- vira NOT NULL na fase 8.
-INSERT INTO mensagem (conversa_id, direcao, tipo, texto, midia_caminho, provedor, aplicacao_id)
+--
+-- dlp_isento_por so chega aqui depois de o handler conferir
+-- aplicacao.pode_isentar_dlp (migration 00027).
+INSERT INTO mensagem (conversa_id, direcao, tipo, texto, midia_caminho, provedor, aplicacao_id, dlp_isento_por)
 VALUES (
     sqlc.arg(conversa_id),
     'saida',
@@ -23,6 +26,7 @@ VALUES (
     sqlc.narg(texto),
     sqlc.narg(midia_caminho),
     'zapi',
-    sqlc.narg(aplicacao_id)
+    sqlc.narg(aplicacao_id),
+    sqlc.narg(dlp_isento_por)
 )
 RETURNING *;

@@ -28,7 +28,7 @@ func (q *Queries) BuscarConversaPorID(ctx context.Context, id int64) (Conversa, 
 }
 
 const criarMensagemSaida = `-- name: CriarMensagemSaida :one
-INSERT INTO mensagem (conversa_id, direcao, tipo, texto, midia_caminho, provedor, aplicacao_id)
+INSERT INTO mensagem (conversa_id, direcao, tipo, texto, midia_caminho, provedor, aplicacao_id, dlp_isento_por)
 VALUES (
     $1,
     'saida',
@@ -36,9 +36,10 @@ VALUES (
     $3,
     $4,
     'zapi',
-    $5
+    $5,
+    $6
 )
-RETURNING id, conversa_id, direcao, tipo, texto, midia_caminho, provedor, provedor_msg_id, zaap_id, status, tentativas, tentar_em, payload_bruto, criado_em, hash_anterior, hash, ultimo_erro, aplicacao_id
+RETURNING id, conversa_id, direcao, tipo, texto, midia_caminho, provedor, provedor_msg_id, zaap_id, status, tentativas, tentar_em, payload_bruto, criado_em, hash_anterior, hash, ultimo_erro, aplicacao_id, dlp_isento_por
 `
 
 type CriarMensagemSaidaParams struct {
@@ -47,6 +48,7 @@ type CriarMensagemSaidaParams struct {
 	Texto        *string `json:"texto"`
 	MidiaCaminho *string `json:"midia_caminho"`
 	AplicacaoID  *int64  `json:"aplicacao_id"`
+	DlpIsentoPor *string `json:"dlp_isento_por"`
 }
 
 // mensagem criada pelo CRM via POST /api/mensagens (fase 7). Direcao e
@@ -62,6 +64,9 @@ type CriarMensagemSaidaParams struct {
 // aplicacao_id e a procedencia (barramento, fase 1): vem do token
 // autenticado, nunca do corpo. Nulavel enquanto o caminho legado
 // (ExigirTokenServico) existir -- vira NOT NULL na fase 8.
+//
+// dlp_isento_por so chega aqui depois de o handler conferir
+// aplicacao.pode_isentar_dlp (migration 00027).
 func (q *Queries) CriarMensagemSaida(ctx context.Context, arg CriarMensagemSaidaParams) (Mensagem, error) {
 	row := q.db.QueryRow(ctx, criarMensagemSaida,
 		arg.ConversaID,
@@ -69,6 +74,7 @@ func (q *Queries) CriarMensagemSaida(ctx context.Context, arg CriarMensagemSaida
 		arg.Texto,
 		arg.MidiaCaminho,
 		arg.AplicacaoID,
+		arg.DlpIsentoPor,
 	)
 	var i Mensagem
 	err := row.Scan(
@@ -90,6 +96,7 @@ func (q *Queries) CriarMensagemSaida(ctx context.Context, arg CriarMensagemSaida
 		&i.Hash,
 		&i.UltimoErro,
 		&i.AplicacaoID,
+		&i.DlpIsentoPor,
 	)
 	return i, err
 }

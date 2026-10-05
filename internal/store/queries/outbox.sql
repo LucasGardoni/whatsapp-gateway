@@ -17,12 +17,12 @@ WITH selecionadas AS (
     SET status = 'enviando'
     FROM selecionadas s
     WHERE m.id = s.id
-    RETURNING m.id, m.conversa_id, m.tipo, m.texto, m.midia_caminho, m.tentativas
+    RETURNING m.id, m.conversa_id, m.tipo, m.texto, m.midia_caminho, m.tentativas, m.dlp_isento_por
 )
 -- conversa_id e corretor_id alimentam a publicacao do evento sse apos o
 -- envio (fase 7) -- sem eles o worker nao sabe pra qual corretor notificar.
 -- tipo/midia_caminho alimentam o envio de midia (fase 9).
-SELECT a.id, a.conversa_id, a.tipo, a.texto, a.midia_caminho, a.tentativas, lead.chat_lid, lead.telefone_e164, c.corretor_id
+SELECT a.id, a.conversa_id, a.tipo, a.texto, a.midia_caminho, a.tentativas, a.dlp_isento_por, lead.chat_lid, lead.telefone_e164, c.corretor_id
 FROM atualizadas a
 JOIN conversa c ON c.id = a.conversa_id
 JOIN lead ON lead.id = c.lead_id;

@@ -45,6 +45,9 @@ type Aplicacao struct {
 	// as aplicacoes -- por isso e permissao, e nao rota aberta a quem
 	// tem token.
 	PodeLerMetricas bool
+	// PodeIsentarDLP deixa a aplicacao mandar dlp_isento_por numa mensagem
+	// de WhatsApp: o bloqueio do DLP vira aviso (migration 00027).
+	PodeIsentarDLP bool
 }
 
 type chaveContextoAplicacao struct{}
@@ -181,6 +184,7 @@ func (a *AutenticadorAplicacao) Resolver(ctx context.Context, token string) (*Ap
 		LimiteRequisicoesPorMinuto: linha.LimiteRequisicoesPorMinuto,
 		LimiteConteudoCifradoBytes: linha.LimiteConteudoCifradoBytes,
 		PodeLerMetricas:            linha.PodeLerMetricas,
+		PodeIsentarDLP:             linha.PodeIsentarDlp,
 	}
 	a.guardar(hash, entradaCache{app: app, achou: true})
 	return &app, nil

@@ -210,6 +210,12 @@ func (w *Worker) processar(ctx context.Context, c caixa.Caixa, p provedor.Proved
 	}
 	if legenda != "" {
 		veredito := w.dlp.Avaliar(legenda)
+		if m.DlpIsentoPor != nil {
+			if veredito.Bloqueado() {
+				slog.Info("outbox: bloqueio do dlp rebaixado por isencao", "mensagem_id", m.ID, "isento_por", *m.DlpIsentoPor)
+			}
+			veredito = veredito.Isento()
+		}
 		w.registrarOcorrenciasDLP(ctx, m.ID, veredito)
 		if veredito.Bloqueado() {
 			slog.Warn("outbox: mensagem bloqueada pelo dlp", "mensagem_id", m.ID)

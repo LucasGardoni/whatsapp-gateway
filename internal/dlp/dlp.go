@@ -36,6 +36,20 @@ type Resultado struct {
 	Ocorrencias []Ocorrencia
 }
 
+// Isento devolve o veredito de uma mensagem com isencao (migration 00027):
+// o que seria bloqueio vira aviso, para continuar no relatorio do
+// supervisor sem segurar a entrega.
+func (r Resultado) Isento() Resultado {
+	ocorrencias := make([]Ocorrencia, len(r.Ocorrencias))
+	for i, o := range r.Ocorrencias {
+		if o.Decisao == Bloquear {
+			o.Decisao = Avisar
+		}
+		ocorrencias[i] = o
+	}
+	return Resultado{Ocorrencias: ocorrencias}
+}
+
 // Bloqueado e true quando ao menos uma ocorrencia decidiu bloquear -- a
 // mensagem nao deve ser entregue ao provedor.
 func (r Resultado) Bloqueado() bool {

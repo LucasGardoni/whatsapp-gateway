@@ -26,6 +26,7 @@ type Aplicacao struct {
 	LimiteRequisicoesPorMinuto *int32           `json:"limite_requisicoes_por_minuto"`
 	LimiteConteudoCifradoBytes *int32           `json:"limite_conteudo_cifrado_bytes"`
 	PodeLerMetricas            bool             `json:"pode_ler_metricas"`
+	PodeIsentarDlp             bool             `json:"pode_isentar_dlp"`
 }
 
 type Caixa struct {
@@ -176,6 +177,7 @@ type Mensagem struct {
 	Hash          *string          `json:"hash"`
 	UltimoErro    *string          `json:"ultimo_erro"`
 	AplicacaoID   *int64           `json:"aplicacao_id"`
+	DlpIsentoPor  *string          `json:"dlp_isento_por"`
 }
 
 type MensagemInterna struct {

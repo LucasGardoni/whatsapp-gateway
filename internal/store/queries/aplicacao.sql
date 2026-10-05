@@ -18,7 +18,7 @@
 -- seria um SELECT por politica por requisicao.
 SELECT id, codigo, nome, ativo, token_hash,
        limite_requisicoes_por_minuto, limite_conteudo_cifrado_bytes,
-       pode_ler_metricas
+       pode_ler_metricas, pode_isentar_dlp
 FROM aplicacao
 WHERE token_hash = $1
   AND ativo;
@@ -26,13 +26,13 @@ WHERE token_hash = $1
 -- name: BuscarAplicacaoPorCodigo :one
 SELECT id, codigo, nome, ativo, criado_em,
        limite_requisicoes_por_minuto, limite_conteudo_cifrado_bytes,
-       pode_ler_metricas
+       pode_ler_metricas, pode_isentar_dlp
 FROM aplicacao
 WHERE codigo = $1;
 
 -- name: ListarAplicacoes :many
 SELECT id, codigo, nome, ativo, criado_em,
        limite_requisicoes_por_minuto, limite_conteudo_cifrado_bytes,
-       pode_ler_metricas
+       pode_ler_metricas, pode_isentar_dlp
 FROM aplicacao
 ORDER BY codigo;

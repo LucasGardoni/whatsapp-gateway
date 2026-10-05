@@ -14,7 +14,7 @@ import (
 const buscarAplicacaoPorCodigo = `-- name: BuscarAplicacaoPorCodigo :one
 SELECT id, codigo, nome, ativo, criado_em,
        limite_requisicoes_por_minuto, limite_conteudo_cifrado_bytes,
-       pode_ler_metricas
+       pode_ler_metricas, pode_isentar_dlp
 FROM aplicacao
 WHERE codigo = $1
 `
@@ -28,6 +28,7 @@ type BuscarAplicacaoPorCodigoRow struct {
 	LimiteRequisicoesPorMinuto *int32           `json:"limite_requisicoes_por_minuto"`
 	LimiteConteudoCifradoBytes *int32           `json:"limite_conteudo_cifrado_bytes"`
 	PodeLerMetricas            bool             `json:"pode_ler_metricas"`
+	PodeIsentarDlp             bool             `json:"pode_isentar_dlp"`
 }
 
 func (q *Queries) BuscarAplicacaoPorCodigo(ctx context.Context, codigo string) (BuscarAplicacaoPorCodigoRow, error) {
@@ -42,6 +43,7 @@ func (q *Queries) BuscarAplicacaoPorCodigo(ctx context.Context, codigo string) (
 		&i.LimiteRequisicoesPorMinuto,
 		&i.LimiteConteudoCifradoBytes,
 		&i.PodeLerMetricas,
+		&i.PodeIsentarDlp,
 	)
 	return i, err
 }
@@ -49,7 +51,7 @@ func (q *Queries) BuscarAplicacaoPorCodigo(ctx context.Context, codigo string) (
 const buscarAplicacaoPorTokenHash = `-- name: BuscarAplicacaoPorTokenHash :one
 SELECT id, codigo, nome, ativo, token_hash,
        limite_requisicoes_por_minuto, limite_conteudo_cifrado_bytes,
-       pode_ler_metricas
+       pode_ler_metricas, pode_isentar_dlp
 FROM aplicacao
 WHERE token_hash = $1
   AND ativo
@@ -64,6 +66,7 @@ type BuscarAplicacaoPorTokenHashRow struct {
 	LimiteRequisicoesPorMinuto *int32 `json:"limite_requisicoes_por_minuto"`
 	LimiteConteudoCifradoBytes *int32 `json:"limite_conteudo_cifrado_bytes"`
 	PodeLerMetricas            bool   `json:"pode_ler_metricas"`
+	PodeIsentarDlp             bool   `json:"pode_isentar_dlp"`
 }
 
 // Autenticacao de servico (fase 1 do barramento). Filtra por ativo aqui e
@@ -95,6 +98,7 @@ func (q *Queries) BuscarAplicacaoPorTokenHash(ctx context.Context, tokenHash str
 		&i.LimiteRequisicoesPorMinuto,
 		&i.LimiteConteudoCifradoBytes,
 		&i.PodeLerMetricas,
+		&i.PodeIsentarDlp,
 	)
 	return i, err
 }
@@ -102,7 +106,7 @@ func (q *Queries) BuscarAplicacaoPorTokenHash(ctx context.Context, tokenHash str
 const listarAplicacoes = `-- name: ListarAplicacoes :many
 SELECT id, codigo, nome, ativo, criado_em,
        limite_requisicoes_por_minuto, limite_conteudo_cifrado_bytes,
-       pode_ler_metricas
+       pode_ler_metricas, pode_isentar_dlp
 FROM aplicacao
 ORDER BY codigo
 `
@@ -116,6 +120,7 @@ type ListarAplicacoesRow struct {
 	LimiteRequisicoesPorMinuto *int32           `json:"limite_requisicoes_por_minuto"`
 	LimiteConteudoCifradoBytes *int32           `json:"limite_conteudo_cifrado_bytes"`
 	PodeLerMetricas            bool             `json:"pode_ler_metricas"`
+	PodeIsentarDlp             bool             `json:"pode_isentar_dlp"`
 }
 
 func (q *Queries) ListarAplicacoes(ctx context.Context) ([]ListarAplicacoesRow, error) {
@@ -136,6 +141,7 @@ func (q *Queries) ListarAplicacoes(ctx context.Context) ([]ListarAplicacoesRow, 
 			&i.LimiteRequisicoesPorMinuto,
 			&i.LimiteConteudoCifradoBytes,
 			&i.PodeLerMetricas,
+			&i.PodeIsentarDlp,
 		); err != nil {
 			return nil, err
 		}

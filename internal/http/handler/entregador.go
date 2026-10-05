@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -144,13 +145,16 @@ type entregadorWhatsApp struct {
 	eventos  eventos.WhatsApp
 }
 
-// Validar ignora app: o canal WhatsApp nao tem limite por aplicacao a
-// aplicar. O teto dele e o da Z-API e o do DLP, que sao do provedor e do
-// conteudo, nao do consumidor.
-func (e entregadorWhatsApp) Validar(_ *middleware.Aplicacao, req mensagem.Requisicao) error {
+// Validar so olha a aplicacao para a isencao de DLP: o canal WhatsApp nao
+// tem limite por aplicacao. O teto dele e o da Z-API e o do DLP, que sao do
+// provedor e do conteudo, nao do consumidor.
+func (e entregadorWhatsApp) Validar(app *middleware.Aplicacao, req mensagem.Requisicao) error {
 	msg := req.ComoWhatsApp()
 	if err := msg.Validar(); err != nil {
 		return err
+	}
+	if strings.TrimSpace(req.DLPIsentoPor) != "" && (app == nil || !app.PodeIsentarDLP) {
+		return recusa(http.StatusForbidden, "aplicacao sem permissao para isentar o dlp")
 	}
 	if msg.MidiaCaminho == "" {
 		return nil
@@ -192,6 +196,7 @@ func (e entregadorWhatsApp) Persistir(ctx context.Context, q *store.Queries, app
 		Texto:        naoVazio(msg.Texto),
 		MidiaCaminho: naoVazio(msg.MidiaCaminho),
 		AplicacaoID:  aplicacaoID,
+		DlpIsentoPor: naoVazio(strings.TrimSpace(req.DLPIsentoPor)),
 	})
 	if err != nil {
 		return Entrega{}, fmt.Errorf("criar mensagem de saida: %w", err)
