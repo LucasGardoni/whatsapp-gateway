@@ -6,7 +6,7 @@
 --
 -- A mensagem isenta continua passando pelo motor: o que seria bloqueio
 -- vira aviso em dlp_ocorrencia, para o supervisor seguir vendo o que saiu.
-ALTER TABLE aplicacao ADD COLUMN pode_isentar_dlp boolean NOT NULL DEFAULT false;
+ALTER TABLE aplicacao ADD COLUMN IF NOT EXISTS pode_isentar_dlp boolean NOT NULL DEFAULT false;
 
 -- quem pediu a isencao (ex.: "usuario:808", "sistema:PROGRAMADA"); nulo = sem isencao.
 ALTER TABLE mensagem ADD COLUMN dlp_isento_por text;
