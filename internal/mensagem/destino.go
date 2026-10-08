@@ -63,6 +63,7 @@ var tiposMidiaAceitos = map[string]bool{
 	"audio":     true,
 	"video":     true,
 	"documento": true,
+	"figurinha": true,
 }
 
 // WhatsApp e uma mensagem de saida para o WhatsApp, ja normalizada.
@@ -115,7 +116,7 @@ func (m WhatsApp) Validar() error {
 			return invalido("midia_caminho e obrigatorio para tipo %s", m.Tipo)
 		}
 	default:
-		return invalido("tipo invalido: use texto, imagem, audio, video ou documento")
+		return invalido("tipo invalido: use texto, imagem, audio, video, documento ou figurinha")
 	}
 	return nil
 }

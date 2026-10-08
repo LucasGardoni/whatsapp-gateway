@@ -107,6 +107,8 @@ func camposEnvioMidia(msg provedor.MensagemMidia) (caminho, campo string, err er
 		return "send-audio", "audio", nil
 	case "video":
 		return "send-video", "video", nil
+	case "figurinha":
+		return "send-sticker", "sticker", nil
 	case "documento":
 		ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(msg.NomeArquivo)), ".")
 		if ext == "" {
@@ -130,7 +132,8 @@ func (c *Cliente) EnviarMidia(ctx context.Context, msg provedor.MensagemMidia) (
 		"phone": msg.Destinatario,
 		campo:   msg.ConteudoBase64,
 	}
-	if msg.Legenda != "" {
+	// figurinha nao tem legenda no WhatsApp
+	if msg.Legenda != "" && msg.Tipo != "figurinha" {
 		corpo["caption"] = msg.Legenda
 	}
 	if msg.Tipo == "documento" && msg.NomeArquivo != "" {

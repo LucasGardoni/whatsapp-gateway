@@ -24,6 +24,7 @@ type PayloadRecebido struct {
 	Audio    *ConteudoAudio     `json:"audio,omitempty"`
 	Video    *ConteudoVideo     `json:"video,omitempty"`
 	Document *ConteudoDocumento `json:"document,omitempty"`
+	Sticker  *ConteudoFigurinha `json:"sticker,omitempty"`
 
 	// ExternalAdReply so vem preenchido quando a conversa nasce de um
 	// anuncio click-to-whatsapp (secao 4.5) -- atribuicao de campanha de
@@ -62,6 +63,11 @@ type ConteudoDocumento struct {
 	URL      string `json:"documentUrl"`
 	MimeType string `json:"mimeType"`
 	FileName string `json:"fileName"`
+}
+
+type ConteudoFigurinha struct {
+	URL      string `json:"stickerUrl"`
+	MimeType string `json:"mimeType"`
 }
 
 // PayloadStatusMensagem e o corpo do webhook on-message-status. IDs vem em

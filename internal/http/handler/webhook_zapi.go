@@ -315,6 +315,8 @@ func classificarConteudo(p zapi.PayloadRecebido) (tipo, texto, midiaURL, downloa
 		// O nome do arquivo vai no texto: e o que o contato ve no WhatsApp e
 		// o G10 devolve como filename.
 		return "documento", p.Document.FileName, p.Document.URL, ""
+	case p.Sticker != nil:
+		return "figurinha", "", p.Sticker.URL, ""
 	default:
 		return "outro", "", "", ""
 	}
