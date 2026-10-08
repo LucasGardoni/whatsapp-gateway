@@ -368,6 +368,17 @@ func (c *Cliente) QRCodeImagem(ctx context.Context) (*ResultadoQRCode, error) {
 	return &ResultadoQRCode{ImagemPNG: imagem, ContentType: "image/png"}, nil
 }
 
+// Desconectar encerra a sessao do WhatsApp nesta instancia. O aparelho
+// continua logado, mas a instancia precisara de novo qr code para reconectar.
+func (c *Cliente) Desconectar(ctx context.Context) error {
+	req, err := c.novaRequisicao(ctx, http.MethodGet, "disconnect", nil)
+	if err != nil {
+		return fmt.Errorf("desconectar: %w", err)
+	}
+	_, err = c.corpoOuErro(req, "desconectar")
+	return err
+}
+
 // corpoOuErro roda uma requisicao ja montada e devolve o corpo quando o
 // status e 200, ou um erro com o corpo da resposta caso contrario.
 func (c *Cliente) corpoOuErro(req *http.Request, contexto string) ([]byte, error) {

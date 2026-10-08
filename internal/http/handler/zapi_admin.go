@@ -121,6 +121,21 @@ func (h *ZAPIAdmin) QRCode(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(resultado.ImagemPNG)
 }
 
+// Desconectar encerra a sessao do WhatsApp da caixa -- usado quando a
+// instancia errada esta conectada e e preciso reconectar no numero certo.
+func (h *ZAPIAdmin) Desconectar(w http.ResponseWriter, r *http.Request) {
+	cliente, ok := h.clienteDaCaixa(w, r)
+	if !ok {
+		return
+	}
+	if err := cliente.Desconectar(r.Context()); err != nil {
+		slog.Error("zapi admin: desconectar", "erro", err)
+		http.Error(w, "erro ao desconectar", http.StatusBadGateway)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 type respostaTokenChamada struct {
 	Token      string `json:"token"`
 	InstanceID string `json:"instance_id"`

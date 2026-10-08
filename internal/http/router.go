@@ -175,6 +175,7 @@ func NovoRouter(
 			r.Delete("/api/zapi/fila", zapiAdmin.LimparFila)
 			r.Delete("/api/zapi/fila/{id}", zapiAdmin.LimparItemFila)
 			r.Get("/api/zapi/qrcode", zapiAdmin.QRCode)
+			r.Delete("/api/zapi/sessao", zapiAdmin.Desconectar)
 
 			// token efemero da sdk de chamadas (@z-api/call). O browser nunca
 			// chama aqui: a aplicacao pede, confere o usuario e repassa.
