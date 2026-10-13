@@ -42,6 +42,20 @@ type MensagensV1 struct {
 	// registro conta mensagem aceita por aplicacao e canal (fase 9). Nil e
 	// valido -- os testes que nao tratam de metrica nao precisam montar um.
 	registro *metrica.Registro
+	// outbox e acordado depois do commit de mensagem de WhatsApp, para
+	// ela sair sem esperar o tick. Nil e valido: fica so o tick.
+	outbox Despertador
+}
+
+// Despertador antecipa o proximo ciclo do outbox.
+type Despertador interface {
+	Acordar()
+}
+
+// ComOutbox liga o despertar do outbox a cada mensagem de WhatsApp aceita.
+func (h *MensagensV1) ComOutbox(d Despertador) *MensagensV1 {
+	h.outbox = d
+	return h
 }
 
 // NovoMensagensV1 recebe limiteConteudoCifrado (LIMITE_CONTEUDO_CIFRADO_BYTES,
@@ -139,6 +153,9 @@ func (h *MensagensV1) Criar(w http.ResponseWriter, r *http.Request) {
 	// "aplicacao movimentada".
 	if h.registro != nil {
 		h.registro.Mensagem(app.Codigo, req.Canal)
+	}
+	if h.outbox != nil && req.Canal == mensagem.CanalWhatsApp {
+		h.outbox.Acordar()
 	}
 
 	w.Header().Set("Content-Type", "application/json")

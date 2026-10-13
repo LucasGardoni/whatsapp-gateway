@@ -17,6 +17,9 @@ type Provedor interface {
 type MensagemTexto struct {
 	Destinatario string
 	Texto        string
+	// Automatica dispensa o atraso de digitacao: e resposta a quem acabou
+	// de escrever, nao conversa iniciada pelo numero.
+	Automatica bool
 }
 
 // MensagemMidia e o anexo a enviar (fase 9). Tipo segue o vocabulario de

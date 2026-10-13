@@ -40,6 +40,9 @@ type Requisicao struct {
 	// DLPIsentoPor identifica quem pediu a isencao do DLP (ex.: "usuario:808",
 	// "sistema:PROGRAMADA"). So vale para aplicacao com pode_isentar_dlp.
 	DLPIsentoPor string `json:"dlp_isento_por"`
+	// Automatica marca a resposta automatica (URA, protocolo, despedida):
+	// sai sem o "digitando" proporcional ao texto (migration 00029).
+	Automatica bool `json:"automatica"`
 
 	// canal=interno -- opaco de ponta a ponta. ConteudoCifrado chega em
 	// base64 (nonce || ciphertext) so porque JSON nao carrega bytes.

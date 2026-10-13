@@ -28,7 +28,7 @@ func (q *Queries) BuscarConversaPorID(ctx context.Context, id int64) (Conversa, 
 }
 
 const criarMensagemSaida = `-- name: CriarMensagemSaida :one
-INSERT INTO mensagem (conversa_id, direcao, tipo, texto, midia_caminho, provedor, aplicacao_id, dlp_isento_por)
+INSERT INTO mensagem (conversa_id, direcao, tipo, texto, midia_caminho, provedor, aplicacao_id, dlp_isento_por, automatica)
 VALUES (
     $1,
     'saida',
@@ -37,9 +37,10 @@ VALUES (
     $4,
     'zapi',
     $5,
-    $6
+    $6,
+    $7
 )
-RETURNING id, conversa_id, direcao, tipo, texto, midia_caminho, provedor, provedor_msg_id, zaap_id, status, tentativas, tentar_em, payload_bruto, criado_em, hash_anterior, hash, ultimo_erro, aplicacao_id, dlp_isento_por
+RETURNING id, conversa_id, direcao, tipo, texto, midia_caminho, provedor, provedor_msg_id, zaap_id, status, tentativas, tentar_em, payload_bruto, criado_em, hash_anterior, hash, ultimo_erro, aplicacao_id, dlp_isento_por, automatica
 `
 
 type CriarMensagemSaidaParams struct {
@@ -49,6 +50,7 @@ type CriarMensagemSaidaParams struct {
 	MidiaCaminho *string `json:"midia_caminho"`
 	AplicacaoID  *int64  `json:"aplicacao_id"`
 	DlpIsentoPor *string `json:"dlp_isento_por"`
+	Automatica   bool    `json:"automatica"`
 }
 
 // mensagem criada pelo CRM via POST /api/mensagens (fase 7). Direcao e
@@ -75,6 +77,7 @@ func (q *Queries) CriarMensagemSaida(ctx context.Context, arg CriarMensagemSaida
 		arg.MidiaCaminho,
 		arg.AplicacaoID,
 		arg.DlpIsentoPor,
+		arg.Automatica,
 	)
 	var i Mensagem
 	err := row.Scan(
@@ -97,6 +100,7 @@ func (q *Queries) CriarMensagemSaida(ctx context.Context, arg CriarMensagemSaida
 		&i.UltimoErro,
 		&i.AplicacaoID,
 		&i.DlpIsentoPor,
+		&i.Automatica,
 	)
 	return i, err
 }

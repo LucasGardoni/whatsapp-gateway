@@ -197,6 +197,7 @@ func (e entregadorWhatsApp) Persistir(ctx context.Context, q *store.Queries, app
 		MidiaCaminho: naoVazio(msg.MidiaCaminho),
 		AplicacaoID:  aplicacaoID,
 		DlpIsentoPor: naoVazio(strings.TrimSpace(req.DLPIsentoPor)),
+		Automatica:   req.Automatica,
 	})
 	if err != nil {
 		return Entrega{}, fmt.Errorf("criar mensagem de saida: %w", err)

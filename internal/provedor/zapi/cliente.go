@@ -87,7 +87,16 @@ type respostaEnviar struct {
 
 // Enviar manda texto com delayMessage e delayTyping proporcionais ao
 // tamanho da mensagem -- nao sao cosmeticos, mitigam banimento (secao 4.2).
+// A mensagem automatica responde a quem acabou de escrever: vai com o
+// menor delay que a z-api aceita e sem "digitando".
 func (c *Cliente) Enviar(ctx context.Context, msg provedor.MensagemTexto) (*provedor.ResultadoEnvio, error) {
+	if msg.Automatica {
+		return c.enviar(ctx, "send-text", map[string]any{
+			"phone":        msg.Destinatario,
+			"message":      msg.Texto,
+			"delayMessage": 1,
+		})
+	}
 	return c.enviar(ctx, "send-text", map[string]any{
 		"phone":        msg.Destinatario,
 		"message":      msg.Texto,

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -49,6 +50,9 @@ type Config struct {
 	// Vazio cai no default "./dados/midia", igual ao config.MidiaDir --
 	// nunca vira "leia de qualquer lugar do disco".
 	MidiaDir string
+	// CacheStatus e por quanto tempo o "conectada" da caixa vale sem nova
+	// consulta ao /status do provedor. Desconectada nunca fica em cache.
+	CacheStatus time.Duration
 	// EventosWhatsApp entrega os eventos de status tambem por caixa (G8).
 	EventosWhatsApp eventos.WhatsApp
 	// Observador recebe o desfecho de cada mensagem e o batimento de cada
@@ -78,6 +82,9 @@ func (c Config) comDefaults() Config {
 	if c.MidiaDir == "" {
 		c.MidiaDir = "./dados/midia"
 	}
+	if c.CacheStatus <= 0 {
+		c.CacheStatus = 15 * time.Second
+	}
 	return c
 }
 
@@ -90,10 +97,32 @@ type Worker struct {
 	caixas caixa.ComProvedores
 	dlp    *dlp.Motor
 	cfg    Config
+	// acordar antecipa o proximo ciclo quando entra mensagem nova, sem
+	// esperar o tick. Buffer 1: varios pedidos seguidos viram um ciclo so.
+	acordar chan struct{}
+
+	mu           sync.Mutex
+	conectadaAte map[int64]time.Time
 }
 
 func NovoWorker(fila Fila, caixas caixa.ComProvedores, motor *dlp.Motor, cfg Config) *Worker {
-	return &Worker{fila: fila, caixas: caixas, dlp: motor, cfg: cfg.comDefaults()}
+	return &Worker{
+		fila:         fila,
+		caixas:       caixas,
+		dlp:          motor,
+		cfg:          cfg.comDefaults(),
+		acordar:      make(chan struct{}, 1),
+		conectadaAte: map[int64]time.Time{},
+	}
+}
+
+// Acordar pede um ciclo agora. Nao bloqueia: se ja ha pedido pendente, o
+// ciclo que vem leva as duas mensagens.
+func (w *Worker) Acordar() {
+	select {
+	case w.acordar <- struct{}{}:
+	default:
+	}
 }
 
 // Executar reseta mensagens presas de um restart anterior e entao roda um
@@ -112,22 +141,28 @@ func (w *Worker) Executar(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-w.acordar:
+			w.ciclo(ctx)
 		case <-ticker.C:
-			// context.WithoutCancel: o ciclo ja em andamento nao deve ser
-			// cortado pelo mesmo sinal que esta pedindo o shutdown --
-			// senao uma mensagem fica presa em 'enviando' sem necessidade.
-			// TimeoutCiclo garante que ele nao trave para sempre.
-			cicloCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), w.cfg.TimeoutCiclo)
-			inicio := time.Now()
-			err := w.rodarCiclo(cicloCtx)
-			if err != nil {
-				slog.Error("outbox: ciclo falhou", "erro", err)
-			}
-			if w.cfg.Observador != nil {
-				w.cfg.Observador.Batimento("outbox", inicio, err)
-			}
-			cancel()
+			w.ciclo(ctx)
 		}
+	}
+}
+
+func (w *Worker) ciclo(ctx context.Context) {
+	// context.WithoutCancel: o ciclo ja em andamento nao deve ser
+	// cortado pelo mesmo sinal que esta pedindo o shutdown --
+	// senao uma mensagem fica presa em 'enviando' sem necessidade.
+	// TimeoutCiclo garante que ele nao trave para sempre.
+	cicloCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), w.cfg.TimeoutCiclo)
+	defer cancel()
+	inicio := time.Now()
+	err := w.rodarCiclo(cicloCtx)
+	if err != nil {
+		slog.Error("outbox: ciclo falhou", "erro", err)
+	}
+	if w.cfg.Observador != nil {
+		w.cfg.Observador.Batimento("outbox", inicio, err)
 	}
 }
 
@@ -156,15 +191,18 @@ func (w *Worker) rodarCaixa(ctx context.Context, c caixa.Caixa) error {
 		return nil
 	}
 
-	status, err := p.Status(ctx)
-	if err != nil {
-		slog.Warn("outbox: nao foi possivel consultar status do provedor, aguardando proximo ciclo", "caixa", c.Codigo, "erro", err)
-		return nil
-	}
-	if !status.Conectada {
-		// nao empurra para a fila da propria z-api (secao 4.7) -- so espera.
-		slog.Warn("outbox: instancia desconectada, nao tenta enviar neste ciclo", "caixa", c.Codigo)
-		return nil
+	if !w.conectadaEmCache(c.ID) {
+		status, err := p.Status(ctx)
+		if err != nil {
+			slog.Warn("outbox: nao foi possivel consultar status do provedor, aguardando proximo ciclo", "caixa", c.Codigo, "erro", err)
+			return nil
+		}
+		if !status.Conectada {
+			// nao empurra para a fila da propria z-api (secao 4.7) -- so espera.
+			slog.Warn("outbox: instancia desconectada, nao tenta enviar neste ciclo", "caixa", c.Codigo)
+			return nil
+		}
+		w.guardarConectada(c.ID, true)
 	}
 
 	mensagens, err := w.fila.SelecionarPendentesParaEnvio(ctx, store.SelecionarPendentesParaEnvioParams{
@@ -179,6 +217,24 @@ func (w *Worker) rodarCaixa(ctx context.Context, c caixa.Caixa) error {
 		w.processarMensagem(ctx, c, p, m)
 	}
 	return nil
+}
+
+// conectadaEmCache poupa o /status a cada ciclo: com o Acordar, os ciclos
+// ficam muito mais frequentes que o tick.
+func (w *Worker) conectadaEmCache(caixaID int64) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return time.Now().Before(w.conectadaAte[caixaID])
+}
+
+func (w *Worker) guardarConectada(caixaID int64, conectada bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if conectada {
+		w.conectadaAte[caixaID] = time.Now().Add(w.cfg.CacheStatus)
+		return
+	}
+	delete(w.conectadaAte, caixaID)
 }
 
 func (w *Worker) processarMensagem(ctx context.Context, c caixa.Caixa, p provedor.Provedor, m store.SelecionarPendentesParaEnvioRow) {
@@ -234,6 +290,8 @@ func (w *Worker) processar(ctx context.Context, c caixa.Caixa, p provedor.Proved
 		return "falha"
 	}
 	if err != nil {
+		// a instancia pode ter caido: o proximo ciclo volta a perguntar.
+		w.guardarConectada(c.ID, false)
 		return w.tratarErroEnvio(ctx, c, m, err)
 	}
 
@@ -258,7 +316,7 @@ func (w *Worker) enviar(ctx context.Context, p provedor.Provedor, m store.Seleci
 		if legenda == "" {
 			return nil, fmt.Errorf("mensagem %d: tipo texto sem conteudo", m.ID), false
 		}
-		resultado, err = p.Enviar(ctx, provedor.MensagemTexto{Destinatario: destino, Texto: legenda})
+		resultado, err = p.Enviar(ctx, provedor.MensagemTexto{Destinatario: destino, Texto: legenda, Automatica: m.Automatica})
 		return resultado, err, true
 	}
 

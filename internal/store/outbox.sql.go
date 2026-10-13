@@ -98,9 +98,9 @@ WITH selecionadas AS (
     SET status = 'enviando'
     FROM selecionadas s
     WHERE m.id = s.id
-    RETURNING m.id, m.conversa_id, m.tipo, m.texto, m.midia_caminho, m.tentativas, m.dlp_isento_por
+    RETURNING m.id, m.conversa_id, m.tipo, m.texto, m.midia_caminho, m.tentativas, m.dlp_isento_por, m.automatica
 )
-SELECT a.id, a.conversa_id, a.tipo, a.texto, a.midia_caminho, a.tentativas, a.dlp_isento_por, lead.chat_lid, lead.telefone_e164, c.corretor_id
+SELECT a.id, a.conversa_id, a.tipo, a.texto, a.midia_caminho, a.tentativas, a.dlp_isento_por, a.automatica, lead.chat_lid, lead.telefone_e164, c.corretor_id
 FROM atualizadas a
 JOIN conversa c ON c.id = a.conversa_id
 JOIN lead ON lead.id = c.lead_id
@@ -119,6 +119,7 @@ type SelecionarPendentesParaEnvioRow struct {
 	MidiaCaminho *string `json:"midia_caminho"`
 	Tentativas   int32   `json:"tentativas"`
 	DlpIsentoPor *string `json:"dlp_isento_por"`
+	Automatica   bool    `json:"automatica"`
 	ChatLid      *string `json:"chat_lid"`
 	TelefoneE164 *string `json:"telefone_e164"`
 	CorretorID   *int64  `json:"corretor_id"`
@@ -149,6 +150,7 @@ func (q *Queries) SelecionarPendentesParaEnvio(ctx context.Context, arg Selecion
 			&i.MidiaCaminho,
 			&i.Tentativas,
 			&i.DlpIsentoPor,
+			&i.Automatica,
 			&i.ChatLid,
 			&i.TelefoneE164,
 			&i.CorretorID,

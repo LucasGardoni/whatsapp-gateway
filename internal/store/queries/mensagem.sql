@@ -18,7 +18,7 @@ SELECT * FROM conversa WHERE id = $1;
 --
 -- dlp_isento_por so chega aqui depois de o handler conferir
 -- aplicacao.pode_isentar_dlp (migration 00027).
-INSERT INTO mensagem (conversa_id, direcao, tipo, texto, midia_caminho, provedor, aplicacao_id, dlp_isento_por)
+INSERT INTO mensagem (conversa_id, direcao, tipo, texto, midia_caminho, provedor, aplicacao_id, dlp_isento_por, automatica)
 VALUES (
     sqlc.arg(conversa_id),
     'saida',
@@ -27,6 +27,7 @@ VALUES (
     sqlc.narg(midia_caminho),
     'zapi',
     sqlc.narg(aplicacao_id),
-    sqlc.narg(dlp_isento_por)
+    sqlc.narg(dlp_isento_por),
+    sqlc.arg(automatica)
 )
 RETURNING *;

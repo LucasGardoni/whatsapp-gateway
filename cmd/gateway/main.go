@@ -127,7 +127,7 @@ func run() error {
 	identidadeCliente := identidade.NovoCliente(cfg.ZAPIInstanceID, cfg.ZAPIInstanceToken, cfg.ZAPIClientToken)
 	disparo := handler.NovoDisparo(pool, identidadeCliente, cfg.PublicBaseURL)
 	transbordo := handler.NovoTransbordo(pool)
-	mensagensV1 := handler.NovoMensagensV1(pool, cfg.MidiaDir, cfg.LimiteConteudoCifradoBytes, registroMetricas).ComEventosWhatsApp(eventosWhatsApp)
+	mensagensV1 := handler.NovoMensagensV1(pool, cfg.MidiaDir, cfg.LimiteConteudoCifradoBytes, registroMetricas).ComEventosWhatsApp(eventosWhatsApp).ComOutbox(worker)
 	sessoesSSE := handler.NovoSessoesSSE(assinadorSSE)
 	eventos := handler.NovoEventos(hub, assinadorSSE, cfg.CORSOrigemCRM, registroMetricas).ComObservador(coletor)
 	zapiAdmin := handler.NovoZAPIAdmin(caixas)

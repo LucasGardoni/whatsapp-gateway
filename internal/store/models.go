@@ -178,6 +178,7 @@ type Mensagem struct {
 	UltimoErro    *string          `json:"ultimo_erro"`
 	AplicacaoID   *int64           `json:"aplicacao_id"`
 	DlpIsentoPor  *string          `json:"dlp_isento_por"`
+	Automatica    bool             `json:"automatica"`
 }
 
 type MensagemInterna struct {
