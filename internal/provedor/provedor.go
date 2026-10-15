@@ -20,6 +20,8 @@ type MensagemTexto struct {
 	// Automatica dispensa o atraso de digitacao: e resposta a quem acabou
 	// de escrever, nao conversa iniciada pelo numero.
 	Automatica bool
+	// RespondeA e o id do provedor da mensagem citada. Vazio envia sem citar.
+	RespondeA string
 }
 
 // MensagemMidia e o anexo a enviar (fase 9). Tipo segue o vocabulario de
@@ -33,6 +35,23 @@ type MensagemMidia struct {
 	ConteudoBase64 string
 	NomeArquivo    string
 	Legenda        string
+	RespondeA      string
+}
+
+// Editor e o provedor que sabe editar e apagar para todos uma mensagem ja
+// enviada. Opcional: quem nao implementa (cloud api) responde "nao
+// suportado" na rota, sem chamar nada. Sincrono, fora do outbox: o
+// atendente precisa saber na hora se o WhatsApp aceitou.
+type Editor interface {
+	Editar(ctx context.Context, msg Edicao) error
+	Excluir(ctx context.Context, destinatario, provedorMsgID string) error
+}
+
+// Edicao troca o texto de uma mensagem de texto ja enviada.
+type Edicao struct {
+	Destinatario  string
+	ProvedorMsgID string
+	Texto         string
 }
 
 // ResultadoEnvio traz os identificadores devolvidos pelo provedor.

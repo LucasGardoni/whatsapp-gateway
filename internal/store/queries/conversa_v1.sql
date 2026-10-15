@@ -90,12 +90,31 @@ LIMIT sqlc.arg(limite);
 -- desde_id/limite, ordem crescente, ultimo_id pronto para a proxima
 -- pagina. ate_id (nulavel) pagina PARA TRAS, para a rolagem infinita da
 -- timeline ao abrir uma conversa antiga.
-SELECT id, direcao, tipo, texto, midia_caminho, status, criado_em
-  FROM mensagem
- WHERE conversa_id = sqlc.arg(conversa_id)
-   AND id > sqlc.arg(desde_id)
-   AND (sqlc.narg(ate_id)::bigint IS NULL OR id < sqlc.narg(ate_id)::bigint)
- ORDER BY id
+--
+-- texto_editado e o texto da ultima edicao (migration 00030); texto segue
+-- sendo o original. Tabela derivada com LEFT JOIN, e nao LATERAL, pelo
+-- mesmo motivo de ListarConversas: o sqlc so marca nulavel assim.
+WITH ultima_edicao AS (
+    SELECT DISTINCT ON (a.mensagem_id) a.mensagem_id, a.texto
+      FROM mensagem_alteracao a
+      JOIN mensagem me ON me.id = a.mensagem_id
+     WHERE me.conversa_id = sqlc.arg(conversa_id)
+       AND a.acao = 'edicao'
+     ORDER BY a.mensagem_id, a.id DESC
+)
+SELECT m.id, m.direcao, m.tipo, m.texto, m.midia_caminho, m.status, m.criado_em,
+       m.autor, m.editada_em, m.excluida_em, m.excluida_por, m.responde_a_id,
+       ed.texto AS texto_editado,
+       ref.direcao AS responde_a_direcao,
+       ref.tipo AS responde_a_tipo,
+       ref.texto AS responde_a_texto
+  FROM mensagem m
+  LEFT JOIN ultima_edicao ed ON ed.mensagem_id = m.id
+  LEFT JOIN mensagem ref ON ref.id = m.responde_a_id
+ WHERE m.conversa_id = sqlc.arg(conversa_id)
+   AND m.id > sqlc.arg(desde_id)
+   AND (sqlc.narg(ate_id)::bigint IS NULL OR m.id < sqlc.narg(ate_id)::bigint)
+ ORDER BY m.id
  LIMIT sqlc.arg(limite);
 
 -- name: MarcarConversaLida :execrows

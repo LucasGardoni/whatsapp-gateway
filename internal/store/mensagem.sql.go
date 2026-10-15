@@ -28,7 +28,7 @@ func (q *Queries) BuscarConversaPorID(ctx context.Context, id int64) (Conversa, 
 }
 
 const criarMensagemSaida = `-- name: CriarMensagemSaida :one
-INSERT INTO mensagem (conversa_id, direcao, tipo, texto, midia_caminho, provedor, aplicacao_id, dlp_isento_por, automatica)
+INSERT INTO mensagem (conversa_id, direcao, tipo, texto, midia_caminho, provedor, aplicacao_id, dlp_isento_por, automatica, autor, responde_a_id)
 VALUES (
     $1,
     'saida',
@@ -38,9 +38,11 @@ VALUES (
     'zapi',
     $5,
     $6,
-    $7
+    $7,
+    $8,
+    $9
 )
-RETURNING id, conversa_id, direcao, tipo, texto, midia_caminho, provedor, provedor_msg_id, zaap_id, status, tentativas, tentar_em, payload_bruto, criado_em, hash_anterior, hash, ultimo_erro, aplicacao_id, dlp_isento_por, automatica
+RETURNING id, conversa_id, direcao, tipo, texto, midia_caminho, provedor, provedor_msg_id, zaap_id, status, tentativas, tentar_em, payload_bruto, criado_em, hash_anterior, hash, ultimo_erro, aplicacao_id, dlp_isento_por, automatica, autor, responde_a_id, editada_em, excluida_em, excluida_por
 `
 
 type CriarMensagemSaidaParams struct {
@@ -51,6 +53,8 @@ type CriarMensagemSaidaParams struct {
 	AplicacaoID  *int64  `json:"aplicacao_id"`
 	DlpIsentoPor *string `json:"dlp_isento_por"`
 	Automatica   bool    `json:"automatica"`
+	Autor        *string `json:"autor"`
+	RespondeAID  *int64  `json:"responde_a_id"`
 }
 
 // mensagem criada pelo CRM via POST /api/mensagens (fase 7). Direcao e
@@ -69,6 +73,9 @@ type CriarMensagemSaidaParams struct {
 //
 // dlp_isento_por so chega aqui depois de o handler conferir
 // aplicacao.pode_isentar_dlp (migration 00027).
+//
+// autor e responde_a_id (migration 00030) ficam fora do hash: sao campos
+// novos, e a cadeia ja gravada continua verificavel com a formula 2.
 func (q *Queries) CriarMensagemSaida(ctx context.Context, arg CriarMensagemSaidaParams) (Mensagem, error) {
 	row := q.db.QueryRow(ctx, criarMensagemSaida,
 		arg.ConversaID,
@@ -78,6 +85,8 @@ func (q *Queries) CriarMensagemSaida(ctx context.Context, arg CriarMensagemSaida
 		arg.AplicacaoID,
 		arg.DlpIsentoPor,
 		arg.Automatica,
+		arg.Autor,
+		arg.RespondeAID,
 	)
 	var i Mensagem
 	err := row.Scan(
@@ -101,6 +110,11 @@ func (q *Queries) CriarMensagemSaida(ctx context.Context, arg CriarMensagemSaida
 		&i.AplicacaoID,
 		&i.DlpIsentoPor,
 		&i.Automatica,
+		&i.Autor,
+		&i.RespondeAID,
+		&i.EditadaEm,
+		&i.ExcluidaEm,
+		&i.ExcluidaPor,
 	)
 	return i, err
 }

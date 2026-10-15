@@ -115,6 +115,17 @@ func (h *WebhookZAPI) processarMensagemRecebida(cx caixa.Caixa, payloadBrutoID i
 		return
 	}
 
+	// o contato apagou ou editou uma mensagem: vira alteracao da original,
+	// nunca mensagem nova. Sem a original no banco, a revogacao so fica no
+	// bruto e a edicao segue como mensagem comum (o conteudo nao se perde).
+	if payload.Notification == zapi.NotificacaoRevogacao {
+		h.alteracaoDoCliente(cx, payloadBrutoID, corpo, payload, acaoExclusao)
+		return
+	}
+	if payload.IsEdit && h.alteracaoDoCliente(cx, payloadBrutoID, corpo, payload, acaoEdicao) {
+		return
+	}
+
 	tipo, texto, midiaURL, downloadErro := classificarConteudo(payload)
 
 	var midiaCaminho string
@@ -235,6 +246,23 @@ func (h *WebhookZAPI) processarMensagemRecebida(cx caixa.Caixa, payloadBrutoID i
 	if err != nil {
 		slog.Error("webhook zapi: inserir mensagem", "erro", err)
 		return
+	}
+
+	// citacao: liga a mensagem citada, se ela estiver no banco desta caixa.
+	if ref := idCitado(payload); ref != "" {
+		citada, err := queries.BuscarMensagemPorProvedorMsgIDNaCaixa(ctx, store.BuscarMensagemPorProvedorMsgIDNaCaixaParams{ProvedorMsgID: &ref, CaixaID: cx.ID})
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			slog.Info("webhook zapi: mensagem citada fora do banco", "provedor_msg_id", ref)
+		case err != nil:
+			slog.Error("webhook zapi: buscar mensagem citada", "provedor_msg_id", ref, "erro", err)
+			return
+		case citada.ConversaID == conversa.ID:
+			if err := queries.DefinirRespostaDaMensagem(ctx, store.DefinirRespostaDaMensagemParams{ID: mensagemID, RespondeAID: &citada.ID}); err != nil {
+				slog.Error("webhook zapi: ligar mensagem citada", "mensagem_id", mensagemID, "erro", err)
+				return
+			}
+		}
 	}
 
 	// auditoria encadeada por hash (secao 2, defesa no 4, fase 12) -- dentro

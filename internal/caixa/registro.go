@@ -235,6 +235,18 @@ func (r *Registro) Provedor(c Caixa) provedor.Provedor {
 	return p
 }
 
+// Editor devolve quem edita e apaga mensagem na caixa (sem o embrulho de
+// medicao, que so cobre Provedor). false para provedor que nao sabe.
+func (r *Registro) Editor(c Caixa) (provedor.Editor, bool) {
+	switch c.Provedor {
+	case ProvedorFake:
+		return r.Fake(c), true
+	case ProvedorZAPI:
+		return r.clientesDe(c).zapi, true
+	}
+	return nil, false
+}
+
 // Fake devolve o provedor em memoria da caixa fake.
 func (r *Registro) Fake(c Caixa) *fake.Provedor {
 	r.mu.Lock()

@@ -43,6 +43,11 @@ type Requisicao struct {
 	// Automatica marca a resposta automatica (URA, protocolo, despedida):
 	// sai sem o "digitando" proporcional ao texto (migration 00029).
 	Automatica bool `json:"automatica"`
+	// RespondeA e o id (do gateway) da mensagem citada, da mesma conversa.
+	RespondeA int64 `json:"responde_a"`
+	// Autor identifica quem enviou na aplicacao ("usuario:808"). E o que a
+	// aplicacao confere depois para liberar editar/excluir.
+	Autor string `json:"autor"`
 
 	// canal=interno -- opaco de ponta a ponta. ConteudoCifrado chega em
 	// base64 (nonce || ciphertext) so porque JSON nao carrega bytes.

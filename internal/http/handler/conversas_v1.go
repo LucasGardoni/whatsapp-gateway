@@ -48,6 +48,8 @@ type ConversasV1 struct {
 	// midiaDir e a raiz a que o G10 confina o arquivo servido. Vazio
 	// desliga a rota (404).
 	midiaDir string
+	// alteracao liga editar/excluir (ComAlteracao). Nil responde 501.
+	alteracao *alteracaoMensagens
 }
 
 // caixasV1 e o pedaco de caixa.Registro que as rotas /v1 usam.
@@ -284,13 +286,31 @@ func (h *ConversasV1) Listar(w http.ResponseWriter, r *http.Request) {
 }
 
 type mensagemConversaResponse struct {
-	ID           int64   `json:"id"`
-	Direcao      string  `json:"direcao"`
-	Tipo         string  `json:"tipo"`
-	Texto        *string `json:"texto"`
-	MidiaCaminho *string `json:"midia_caminho"`
-	Status       string  `json:"status"`
-	CriadoEm     string  `json:"criado_em"`
+	ID      int64  `json:"id"`
+	Direcao string `json:"direcao"`
+	Tipo    string `json:"tipo"`
+	// Texto e o atual (ultima edicao); TextoOriginal, o que foi enviado ou
+	// recebido. Mensagem apagada continua com o texto: quem decide mostrar
+	// e a aplicacao.
+	Texto         *string `json:"texto"`
+	TextoOriginal *string `json:"texto_original"`
+	MidiaCaminho  *string `json:"midia_caminho"`
+	Status        string  `json:"status"`
+	CriadoEm      string  `json:"criado_em"`
+	// Autor e quem enviou pela aplicacao ("usuario:808"); nulo na entrada.
+	Autor       *string            `json:"autor"`
+	EditadaEm   *string            `json:"editada_em"`
+	ExcluidaEm  *string            `json:"excluida_em"`
+	ExcluidaPor *string            `json:"excluida_por"`
+	RespondeA   *respondeAResponse `json:"responde_a"`
+}
+
+// respondeAResponse e a mensagem citada, so o bastante para o quote.
+type respondeAResponse struct {
+	ID      int64  `json:"id"`
+	Direcao string `json:"direcao"`
+	Tipo    string `json:"tipo"`
+	Previa  string `json:"previa"`
 }
 
 type mensagensConversaResponse struct {
@@ -359,15 +379,33 @@ func (h *ConversasV1) Mensagens(w http.ResponseWriter, r *http.Request) {
 		UltimoID:   desdeID,
 	}
 	for _, l := range linhas {
-		resp.Mensagens = append(resp.Mensagens, mensagemConversaResponse{
-			ID:           l.ID,
-			Direcao:      l.Direcao,
-			Tipo:         l.Tipo,
-			Texto:        l.Texto,
-			MidiaCaminho: l.MidiaCaminho,
-			Status:       l.Status,
-			CriadoEm:     formatarTimestamp(l.CriadoEm),
-		})
+		item := mensagemConversaResponse{
+			ID:            l.ID,
+			Direcao:       l.Direcao,
+			Tipo:          l.Tipo,
+			Texto:         l.Texto,
+			TextoOriginal: l.Texto,
+			MidiaCaminho:  l.MidiaCaminho,
+			Status:        l.Status,
+			CriadoEm:      formatarTimestamp(l.CriadoEm),
+			Autor:         l.Autor,
+			EditadaEm:     timestampOuNulo(l.EditadaEm),
+			ExcluidaEm:    timestampOuNulo(l.ExcluidaEm),
+			ExcluidaPor:   l.ExcluidaPor,
+		}
+		if l.TextoEditado != nil {
+			item.Texto = l.TextoEditado
+		}
+		if l.RespondeAID != nil {
+			tipo := deref(l.RespondeATipo)
+			item.RespondeA = &respondeAResponse{
+				ID:      *l.RespondeAID,
+				Direcao: deref(l.RespondeADirecao),
+				Tipo:    tipo,
+				Previa:  previa(tipo, l.RespondeATexto),
+			}
+		}
+		resp.Mensagens = append(resp.Mensagens, item)
 		resp.UltimoID = l.ID
 	}
 
@@ -678,6 +716,14 @@ func formatarTimestamp(t pgtype.Timestamp) string {
 		return ""
 	}
 	return t.Time.Format(layoutTempoResposta)
+}
+
+func timestampOuNulo(t pgtype.Timestamp) *string {
+	if !t.Valid {
+		return nil
+	}
+	s := formatarTimestamp(t)
+	return &s
 }
 
 func deref(s *string) string {

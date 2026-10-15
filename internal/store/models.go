@@ -179,6 +179,24 @@ type Mensagem struct {
 	AplicacaoID   *int64           `json:"aplicacao_id"`
 	DlpIsentoPor  *string          `json:"dlp_isento_por"`
 	Automatica    bool             `json:"automatica"`
+	Autor         *string          `json:"autor"`
+	RespondeAID   *int64           `json:"responde_a_id"`
+	EditadaEm     pgtype.Timestamp `json:"editada_em"`
+	ExcluidaEm    pgtype.Timestamp `json:"excluida_em"`
+	ExcluidaPor   *string          `json:"excluida_por"`
+}
+
+type MensagemAlteracao struct {
+	ID            int64            `json:"id"`
+	MensagemID    int64            `json:"mensagem_id"`
+	Acao          string           `json:"acao"`
+	Texto         *string          `json:"texto"`
+	Autor         string           `json:"autor"`
+	CriadoEm      pgtype.Timestamp `json:"criado_em"`
+	ProvedorMsgID *string          `json:"provedor_msg_id"`
+	PayloadBruto  []byte           `json:"payload_bruto"`
+	HashAnterior  *string          `json:"hash_anterior"`
+	Hash          *string          `json:"hash"`
 }
 
 type MensagemInterna struct {

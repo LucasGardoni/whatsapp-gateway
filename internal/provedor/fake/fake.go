@@ -25,6 +25,9 @@ type Provedor struct {
 	EnviadosMidia []provedor.MensagemMidia
 	StatusAtual   provedor.StatusInstancia
 
+	Editadas  []provedor.Edicao
+	Excluidas []string
+
 	// ProximoErro, se definido, e devolvido pela proxima chamada a Enviar
 	// ou EnviarMidia e depois limpo -- simula uma falha pontual (ex.: shadowban).
 	ProximoErro error
@@ -77,4 +80,32 @@ func (p *Provedor) Status(ctx context.Context) (*provedor.StatusInstancia, error
 
 	status := p.StatusAtual
 	return &status, nil
+}
+
+var _ provedor.Editor = (*Provedor)(nil)
+
+func (p *Provedor) Editar(ctx context.Context, msg provedor.Edicao) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.ProximoErro != nil {
+		erro := p.ProximoErro
+		p.ProximoErro = nil
+		return erro
+	}
+	p.Editadas = append(p.Editadas, msg)
+	return nil
+}
+
+func (p *Provedor) Excluir(ctx context.Context, destinatario, provedorMsgID string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.ProximoErro != nil {
+		erro := p.ProximoErro
+		p.ProximoErro = nil
+		return erro
+	}
+	p.Excluidas = append(p.Excluidas, provedorMsgID)
+	return nil
 }

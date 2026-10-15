@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -91,18 +92,69 @@ type respostaEnviar struct {
 // menor delay que a z-api aceita e sem "digitando".
 func (c *Cliente) Enviar(ctx context.Context, msg provedor.MensagemTexto) (*provedor.ResultadoEnvio, error) {
 	if msg.Automatica {
-		return c.enviar(ctx, "send-text", map[string]any{
+		return c.enviar(ctx, "send-text", citando(map[string]any{
 			"phone":        msg.Destinatario,
 			"message":      msg.Texto,
 			"delayMessage": 1,
-		})
+		}, msg.RespondeA))
 	}
-	return c.enviar(ctx, "send-text", map[string]any{
+	return c.enviar(ctx, "send-text", citando(map[string]any{
 		"phone":        msg.Destinatario,
 		"message":      msg.Texto,
 		"delayMessage": 3,
 		"delayTyping":  delayTyping(msg.Texto),
+	}, msg.RespondeA))
+}
+
+// citando poe a mensagem citada no corpo: na z-api o campo e `messageId`
+// tanto no send-text quanto nos de midia (nestes nao documentado).
+func citando(corpo map[string]any, respondeA string) map[string]any {
+	if respondeA != "" {
+		corpo["messageId"] = respondeA
+	}
+	return corpo
+}
+
+var _ provedor.Editor = (*Cliente)(nil)
+
+// Editar troca o texto de uma mensagem nossa: send-text com editMessageId.
+// O WhatsApp so aceita por volta de 15 min apos o envio, e fora disso a
+// z-api pode responder 200 e o aparelho ignorar -- a janela e conferida
+// antes, por quem chama.
+func (c *Cliente) Editar(ctx context.Context, msg provedor.Edicao) error {
+	_, err := c.enviar(ctx, "send-text", map[string]any{
+		"phone":         msg.Destinatario,
+		"message":       msg.Texto,
+		"editMessageId": msg.ProvedorMsgID,
 	})
+	return err
+}
+
+type respostaValor struct {
+	Value bool   `json:"value"`
+	Error string `json:"error"`
+}
+
+// Excluir apaga para todos (DELETE /messages, owner=true, sem deleteForMe).
+func (c *Cliente) Excluir(ctx context.Context, destinatario, provedorMsgID string) error {
+	caminho := "messages?" + url.Values{
+		"messageId": {provedorMsgID},
+		"phone":     {destinatario},
+		"owner":     {"true"},
+	}.Encode()
+	req, err := c.novaRequisicao(ctx, http.MethodDelete, caminho, nil)
+	if err != nil {
+		return fmt.Errorf("excluir mensagem: %w", err)
+	}
+	corpo, err := c.corpoOuErro(req, "excluir mensagem")
+	if err != nil {
+		return err
+	}
+	var r respostaValor
+	if err := json.Unmarshal(corpo, &r); err == nil && (r.Error != "" || !r.Value) {
+		return fmt.Errorf("excluir mensagem: z-api nao confirmou: %s", corpo)
+	}
+	return nil
 }
 
 // camposEnvioMidia mapeia o tipo de mensagem.tipo para o endpoint da z-api
@@ -137,10 +189,10 @@ func (c *Cliente) EnviarMidia(ctx context.Context, msg provedor.MensagemMidia) (
 		return nil, fmt.Errorf("enviar midia: %w", &ErroEnvio{Tipo: ErroNaoRetentavel, Mensagem: err.Error()})
 	}
 
-	corpo := map[string]any{
+	corpo := citando(map[string]any{
 		"phone": msg.Destinatario,
 		campo:   msg.ConteudoBase64,
-	}
+	}, msg.RespondeA)
 	// figurinha nao tem legenda no WhatsApp
 	if msg.Legenda != "" && msg.Tipo != "figurinha" {
 		corpo["caption"] = msg.Legenda

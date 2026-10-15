@@ -30,7 +30,25 @@ type PayloadRecebido struct {
 	// anuncio click-to-whatsapp (secao 4.5) -- atribuicao de campanha de
 	// graca, persistida no lead mesmo sem uso imediato (fase 11).
 	ExternalAdReply *ExternalAdReply `json:"externalAdReply,omitempty"`
+
+	// Edicao, revogacao e citacao (migration 00030). O formato real de cada
+	// caso nao esta nos exemplos da doc: quem consome tenta os ids
+	// candidatos em ordem (ver handler.idsCandidatos).
+	IsEdit                 bool              `json:"isEdit"`
+	Notification           string            `json:"notification"`
+	NotificationParameters []string          `json:"notificationParameters"`
+	ReferenceMessageID     string            `json:"referenceMessageId"`
+	ReferencedMessage      *MensagemReferida `json:"referencedMessage,omitempty"`
 }
+
+// MensagemReferida e a mensagem citada, alvo de reacao ou de revogacao.
+type MensagemReferida struct {
+	MessageID string `json:"messageId"`
+	FromMe    bool   `json:"fromMe"`
+}
+
+// NotificacaoRevogacao e a mensagem apagada para todos pelo contato.
+const NotificacaoRevogacao = "REVOKE"
 
 type ExternalAdReply struct {
 	SourceID string `json:"sourceId"`

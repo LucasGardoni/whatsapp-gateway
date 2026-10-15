@@ -316,7 +316,7 @@ func (w *Worker) enviar(ctx context.Context, p provedor.Provedor, m store.Seleci
 		if legenda == "" {
 			return nil, fmt.Errorf("mensagem %d: tipo texto sem conteudo", m.ID), false
 		}
-		resultado, err = p.Enviar(ctx, provedor.MensagemTexto{Destinatario: destino, Texto: legenda, Automatica: m.Automatica})
+		resultado, err = p.Enviar(ctx, provedor.MensagemTexto{Destinatario: destino, Texto: legenda, Automatica: m.Automatica, RespondeA: deref(m.RespondeAProvedorMsgID)})
 		return resultado, err, true
 	}
 
@@ -340,6 +340,7 @@ func (w *Worker) enviar(ctx context.Context, p provedor.Provedor, m store.Seleci
 		ConteudoBase64: conteudo,
 		NomeArquivo:    filepath.Base(*m.MidiaCaminho),
 		Legenda:        legenda,
+		RespondeA:      deref(m.RespondeAProvedorMsgID),
 	})
 	return resultado, err, true
 }
@@ -476,4 +477,11 @@ func naoVazio(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

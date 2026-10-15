@@ -134,6 +134,9 @@ func responderErro(w http.ResponseWriter, err error, contexto ...any) {
 	}
 }
 
+// tamanhoMaximoAutor limita o identificador de autor ("usuario:808").
+const tamanhoMaximoAutor = 100
+
 // entregadorWhatsApp reaproveita o caminho de sempre: mensagem em
 // 'pendente', entregue depois pelo outbox. Nao existe aqui atalho para o
 // provedor -- quem contorna o outbox contorna o DLP junto.
@@ -155,6 +158,12 @@ func (e entregadorWhatsApp) Validar(app *middleware.Aplicacao, req mensagem.Requ
 	}
 	if strings.TrimSpace(req.DLPIsentoPor) != "" && (app == nil || !app.PodeIsentarDLP) {
 		return recusa(http.StatusForbidden, "aplicacao sem permissao para isentar o dlp")
+	}
+	if req.RespondeA < 0 {
+		return recusa(http.StatusBadRequest, "responde_a invalido")
+	}
+	if len(req.Autor) > tamanhoMaximoAutor {
+		return recusa(http.StatusBadRequest, "autor longo demais")
 	}
 	if msg.MidiaCaminho == "" {
 		return nil
@@ -190,6 +199,18 @@ func (e entregadorWhatsApp) Persistir(ctx context.Context, q *store.Queries, app
 		origem = app.Codigo
 	}
 
+	var respondeA *int64
+	if req.RespondeA > 0 {
+		citada, err := q.BuscarMensagemParaCitar(ctx, store.BuscarMensagemParaCitarParams{ID: req.RespondeA, ConversaID: msg.ConversaID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Entrega{}, recusa(http.StatusBadRequest, "responde_a nao e mensagem desta conversa")
+		}
+		if err != nil {
+			return Entrega{}, fmt.Errorf("buscar mensagem citada %d: %w", req.RespondeA, err)
+		}
+		respondeA = &citada
+	}
+
 	linha, err := q.CriarMensagemSaida(ctx, store.CriarMensagemSaidaParams{
 		ConversaID:   msg.ConversaID,
 		Tipo:         msg.Tipo,
@@ -198,6 +219,8 @@ func (e entregadorWhatsApp) Persistir(ctx context.Context, q *store.Queries, app
 		AplicacaoID:  aplicacaoID,
 		DlpIsentoPor: naoVazio(strings.TrimSpace(req.DLPIsentoPor)),
 		Automatica:   req.Automatica,
+		Autor:        naoVazio(strings.TrimSpace(req.Autor)),
+		RespondeAID:  respondeA,
 	})
 	if err != nil {
 		return Entrega{}, fmt.Errorf("criar mensagem de saida: %w", err)

@@ -18,7 +18,10 @@ SELECT * FROM conversa WHERE id = $1;
 --
 -- dlp_isento_por so chega aqui depois de o handler conferir
 -- aplicacao.pode_isentar_dlp (migration 00027).
-INSERT INTO mensagem (conversa_id, direcao, tipo, texto, midia_caminho, provedor, aplicacao_id, dlp_isento_por, automatica)
+--
+-- autor e responde_a_id (migration 00030) ficam fora do hash: sao campos
+-- novos, e a cadeia ja gravada continua verificavel com a formula 2.
+INSERT INTO mensagem (conversa_id, direcao, tipo, texto, midia_caminho, provedor, aplicacao_id, dlp_isento_por, automatica, autor, responde_a_id)
 VALUES (
     sqlc.arg(conversa_id),
     'saida',
@@ -28,6 +31,8 @@ VALUES (
     'zapi',
     sqlc.narg(aplicacao_id),
     sqlc.narg(dlp_isento_por),
-    sqlc.arg(automatica)
+    sqlc.arg(automatica),
+    sqlc.narg(autor),
+    sqlc.narg(responde_a_id)
 )
 RETURNING *;

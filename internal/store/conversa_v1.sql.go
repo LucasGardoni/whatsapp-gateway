@@ -223,12 +223,27 @@ func (q *Queries) ListarConversas(ctx context.Context, arg ListarConversasParams
 }
 
 const listarMensagensDaConversa = `-- name: ListarMensagensDaConversa :many
-SELECT id, direcao, tipo, texto, midia_caminho, status, criado_em
-  FROM mensagem
- WHERE conversa_id = $1
-   AND id > $2
-   AND ($3::bigint IS NULL OR id < $3::bigint)
- ORDER BY id
+WITH ultima_edicao AS (
+    SELECT DISTINCT ON (a.mensagem_id) a.mensagem_id, a.texto
+      FROM mensagem_alteracao a
+      JOIN mensagem me ON me.id = a.mensagem_id
+     WHERE me.conversa_id = $1
+       AND a.acao = 'edicao'
+     ORDER BY a.mensagem_id, a.id DESC
+)
+SELECT m.id, m.direcao, m.tipo, m.texto, m.midia_caminho, m.status, m.criado_em,
+       m.autor, m.editada_em, m.excluida_em, m.excluida_por, m.responde_a_id,
+       ed.texto AS texto_editado,
+       ref.direcao AS responde_a_direcao,
+       ref.tipo AS responde_a_tipo,
+       ref.texto AS responde_a_texto
+  FROM mensagem m
+  LEFT JOIN ultima_edicao ed ON ed.mensagem_id = m.id
+  LEFT JOIN mensagem ref ON ref.id = m.responde_a_id
+ WHERE m.conversa_id = $1
+   AND m.id > $2
+   AND ($3::bigint IS NULL OR m.id < $3::bigint)
+ ORDER BY m.id
  LIMIT $4
 `
 
@@ -240,19 +255,32 @@ type ListarMensagensDaConversaParams struct {
 }
 
 type ListarMensagensDaConversaRow struct {
-	ID           int64            `json:"id"`
-	Direcao      string           `json:"direcao"`
-	Tipo         string           `json:"tipo"`
-	Texto        *string          `json:"texto"`
-	MidiaCaminho *string          `json:"midia_caminho"`
-	Status       string           `json:"status"`
-	CriadoEm     pgtype.Timestamp `json:"criado_em"`
+	ID               int64            `json:"id"`
+	Direcao          string           `json:"direcao"`
+	Tipo             string           `json:"tipo"`
+	Texto            *string          `json:"texto"`
+	MidiaCaminho     *string          `json:"midia_caminho"`
+	Status           string           `json:"status"`
+	CriadoEm         pgtype.Timestamp `json:"criado_em"`
+	Autor            *string          `json:"autor"`
+	EditadaEm        pgtype.Timestamp `json:"editada_em"`
+	ExcluidaEm       pgtype.Timestamp `json:"excluida_em"`
+	ExcluidaPor      *string          `json:"excluida_por"`
+	RespondeAID      *int64           `json:"responde_a_id"`
+	TextoEditado     *string          `json:"texto_editado"`
+	RespondeADirecao *string          `json:"responde_a_direcao"`
+	RespondeATipo    *string          `json:"responde_a_tipo"`
+	RespondeATexto   *string          `json:"responde_a_texto"`
 }
 
 // Mesmo contrato do historico do canal interno (secao G2/G3 do plano):
 // desde_id/limite, ordem crescente, ultimo_id pronto para a proxima
 // pagina. ate_id (nulavel) pagina PARA TRAS, para a rolagem infinita da
 // timeline ao abrir uma conversa antiga.
+//
+// texto_editado e o texto da ultima edicao (migration 00030); texto segue
+// sendo o original. Tabela derivada com LEFT JOIN, e nao LATERAL, pelo
+// mesmo motivo de ListarConversas: o sqlc so marca nulavel assim.
 func (q *Queries) ListarMensagensDaConversa(ctx context.Context, arg ListarMensagensDaConversaParams) ([]ListarMensagensDaConversaRow, error) {
 	rows, err := q.db.Query(ctx, listarMensagensDaConversa,
 		arg.ConversaID,
@@ -275,6 +303,15 @@ func (q *Queries) ListarMensagensDaConversa(ctx context.Context, arg ListarMensa
 			&i.MidiaCaminho,
 			&i.Status,
 			&i.CriadoEm,
+			&i.Autor,
+			&i.EditadaEm,
+			&i.ExcluidaEm,
+			&i.ExcluidaPor,
+			&i.RespondeAID,
+			&i.TextoEditado,
+			&i.RespondeADirecao,
+			&i.RespondeATipo,
+			&i.RespondeATexto,
 		); err != nil {
 			return nil, err
 		}

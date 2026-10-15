@@ -98,12 +98,14 @@ WITH selecionadas AS (
     SET status = 'enviando'
     FROM selecionadas s
     WHERE m.id = s.id
-    RETURNING m.id, m.conversa_id, m.tipo, m.texto, m.midia_caminho, m.tentativas, m.dlp_isento_por, m.automatica
+    RETURNING m.id, m.conversa_id, m.tipo, m.texto, m.midia_caminho, m.tentativas, m.dlp_isento_por, m.automatica, m.responde_a_id
 )
-SELECT a.id, a.conversa_id, a.tipo, a.texto, a.midia_caminho, a.tentativas, a.dlp_isento_por, a.automatica, lead.chat_lid, lead.telefone_e164, c.corretor_id
+SELECT a.id, a.conversa_id, a.tipo, a.texto, a.midia_caminho, a.tentativas, a.dlp_isento_por, a.automatica, lead.chat_lid, lead.telefone_e164, c.corretor_id,
+       ref.provedor_msg_id AS responde_a_provedor_msg_id
 FROM atualizadas a
 JOIN conversa c ON c.id = a.conversa_id
 JOIN lead ON lead.id = c.lead_id
+LEFT JOIN mensagem ref ON ref.id = a.responde_a_id
 `
 
 type SelecionarPendentesParaEnvioParams struct {
@@ -112,17 +114,18 @@ type SelecionarPendentesParaEnvioParams struct {
 }
 
 type SelecionarPendentesParaEnvioRow struct {
-	ID           int64   `json:"id"`
-	ConversaID   int64   `json:"conversa_id"`
-	Tipo         string  `json:"tipo"`
-	Texto        *string `json:"texto"`
-	MidiaCaminho *string `json:"midia_caminho"`
-	Tentativas   int32   `json:"tentativas"`
-	DlpIsentoPor *string `json:"dlp_isento_por"`
-	Automatica   bool    `json:"automatica"`
-	ChatLid      *string `json:"chat_lid"`
-	TelefoneE164 *string `json:"telefone_e164"`
-	CorretorID   *int64  `json:"corretor_id"`
+	ID                     int64   `json:"id"`
+	ConversaID             int64   `json:"conversa_id"`
+	Tipo                   string  `json:"tipo"`
+	Texto                  *string `json:"texto"`
+	MidiaCaminho           *string `json:"midia_caminho"`
+	Tentativas             int32   `json:"tentativas"`
+	DlpIsentoPor           *string `json:"dlp_isento_por"`
+	Automatica             bool    `json:"automatica"`
+	ChatLid                *string `json:"chat_lid"`
+	TelefoneE164           *string `json:"telefone_e164"`
+	CorretorID             *int64  `json:"corretor_id"`
+	RespondeAProvedorMsgID *string `json:"responde_a_provedor_msg_id"`
 }
 
 // outbox: a fila e a propria tabela mensagem filtrada por status (secao 7).
@@ -133,6 +136,8 @@ type SelecionarPendentesParaEnvioRow struct {
 // conversa_id e corretor_id alimentam a publicacao do evento sse apos o
 // envio (fase 7) -- sem eles o worker nao sabe pra qual corretor notificar.
 // tipo/midia_caminho alimentam o envio de midia (fase 9).
+// responde_a_provedor_msg_id e a mensagem citada (migration 00030); nula
+// quando a citada ainda nao saiu, e ai o envio segue sem citar.
 func (q *Queries) SelecionarPendentesParaEnvio(ctx context.Context, arg SelecionarPendentesParaEnvioParams) ([]SelecionarPendentesParaEnvioRow, error) {
 	rows, err := q.db.Query(ctx, selecionarPendentesParaEnvio, arg.CaixaID, arg.Limite)
 	if err != nil {
@@ -154,6 +159,7 @@ func (q *Queries) SelecionarPendentesParaEnvio(ctx context.Context, arg Selecion
 			&i.ChatLid,
 			&i.TelefoneE164,
 			&i.CorretorID,
+			&i.RespondeAProvedorMsgID,
 		); err != nil {
 			return nil, err
 		}

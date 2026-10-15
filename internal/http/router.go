@@ -249,6 +249,11 @@ func NovoRouter(
 			r.Get("/v1/conversas/{id}/mensagens", conversas.Mensagens)
 			// G10: o arquivo de uma mensagem, para a aplicacao mostrar o anexo.
 			r.Get("/v1/conversas/{id}/mensagens/{mensagem_id}/midia", conversas.Midia)
+			// editar e apagar para todos mensagem nossa; versoes e o log de
+			// cada alteracao (migration 00030).
+			r.Patch("/v1/conversas/{id}/mensagens/{mensagem_id}", conversas.Editar)
+			r.Delete("/v1/conversas/{id}/mensagens/{mensagem_id}", conversas.Excluir)
+			r.Get("/v1/conversas/{id}/mensagens/{mensagem_id}/versoes", conversas.Versoes)
 			// G6: leitura por aplicacao, alimenta nao_lidas de GET /v1/conversas.
 			r.Post("/v1/conversas/{id}/lida", conversas.MarcarLida)
 			// G4: conversa com numero que nunca falou com a caixa.

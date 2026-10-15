@@ -17,15 +17,19 @@ WITH selecionadas AS (
     SET status = 'enviando'
     FROM selecionadas s
     WHERE m.id = s.id
-    RETURNING m.id, m.conversa_id, m.tipo, m.texto, m.midia_caminho, m.tentativas, m.dlp_isento_por, m.automatica
+    RETURNING m.id, m.conversa_id, m.tipo, m.texto, m.midia_caminho, m.tentativas, m.dlp_isento_por, m.automatica, m.responde_a_id
 )
 -- conversa_id e corretor_id alimentam a publicacao do evento sse apos o
 -- envio (fase 7) -- sem eles o worker nao sabe pra qual corretor notificar.
 -- tipo/midia_caminho alimentam o envio de midia (fase 9).
-SELECT a.id, a.conversa_id, a.tipo, a.texto, a.midia_caminho, a.tentativas, a.dlp_isento_por, a.automatica, lead.chat_lid, lead.telefone_e164, c.corretor_id
+-- responde_a_provedor_msg_id e a mensagem citada (migration 00030); nula
+-- quando a citada ainda nao saiu, e ai o envio segue sem citar.
+SELECT a.id, a.conversa_id, a.tipo, a.texto, a.midia_caminho, a.tentativas, a.dlp_isento_por, a.automatica, lead.chat_lid, lead.telefone_e164, c.corretor_id,
+       ref.provedor_msg_id AS responde_a_provedor_msg_id
 FROM atualizadas a
 JOIN conversa c ON c.id = a.conversa_id
-JOIN lead ON lead.id = c.lead_id;
+JOIN lead ON lead.id = c.lead_id
+LEFT JOIN mensagem ref ON ref.id = a.responde_a_id;
 
 -- name: MarcarMensagemEnviada :exec
 UPDATE mensagem

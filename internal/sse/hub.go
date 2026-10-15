@@ -50,6 +50,10 @@ const (
 	EventoMensagemNova        = "mensagem_nova"
 	EventoMensagemStatus      = "mensagem_status"
 	EventoMensagemInternaNova = "mensagem_interna_nova"
+	// edicao e exclusao de mensagem de WhatsApp (migration 00030): a outra
+	// aba rele a mensagem.
+	EventoMensagemEditada  = "mensagem_editada"
+	EventoMensagemExcluida = "mensagem_excluida"
 	// EventoFilaAtualizada avisa que algo mudou numa conversa SEM corretor
 	// atribuido, ou seja, na fila de espera (fase 5). Tipo proprio, e nao
 	// mensagem_nova para todos, porque senao a tela de conversa de cada
