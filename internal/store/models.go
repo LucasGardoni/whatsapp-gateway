@@ -85,6 +85,7 @@ type ConversaLeitura struct {
 	ConversaID   int64            `json:"conversa_id"`
 	UltimaLidaID int64            `json:"ultima_lida_id"`
 	AtualizadoEm pgtype.Timestamp `json:"atualizado_em"`
+	Leitor       string           `json:"leitor"`
 }
 
 type Disparo struct {
@@ -148,6 +149,7 @@ type Lead struct {
 	ProximoPassoTexto  *string          `json:"proximo_passo_texto"`
 	ProximoPassoEm     pgtype.Timestamp `json:"proximo_passo_em"`
 	Notas              *string          `json:"notas"`
+	GrupoID            *string          `json:"grupo_id"`
 }
 
 type LeadPayloadBruto struct {
@@ -159,31 +161,36 @@ type LeadPayloadBruto struct {
 }
 
 type Mensagem struct {
-	ID            int64            `json:"id"`
-	ConversaID    int64            `json:"conversa_id"`
-	Direcao       string           `json:"direcao"`
-	Tipo          string           `json:"tipo"`
-	Texto         *string          `json:"texto"`
-	MidiaCaminho  *string          `json:"midia_caminho"`
-	Provedor      string           `json:"provedor"`
-	ProvedorMsgID *string          `json:"provedor_msg_id"`
-	ZaapID        *string          `json:"zaap_id"`
-	Status        string           `json:"status"`
-	Tentativas    int32            `json:"tentativas"`
-	TentarEm      pgtype.Timestamp `json:"tentar_em"`
-	PayloadBruto  []byte           `json:"payload_bruto"`
-	CriadoEm      pgtype.Timestamp `json:"criado_em"`
-	HashAnterior  *string          `json:"hash_anterior"`
-	Hash          *string          `json:"hash"`
-	UltimoErro    *string          `json:"ultimo_erro"`
-	AplicacaoID   *int64           `json:"aplicacao_id"`
-	DlpIsentoPor  *string          `json:"dlp_isento_por"`
-	Automatica    bool             `json:"automatica"`
-	Autor         *string          `json:"autor"`
-	RespondeAID   *int64           `json:"responde_a_id"`
-	EditadaEm     pgtype.Timestamp `json:"editada_em"`
-	ExcluidaEm    pgtype.Timestamp `json:"excluida_em"`
-	ExcluidaPor   *string          `json:"excluida_por"`
+	ID                    int64            `json:"id"`
+	ConversaID            int64            `json:"conversa_id"`
+	Direcao               string           `json:"direcao"`
+	Tipo                  string           `json:"tipo"`
+	Texto                 *string          `json:"texto"`
+	MidiaCaminho          *string          `json:"midia_caminho"`
+	Provedor              string           `json:"provedor"`
+	ProvedorMsgID         *string          `json:"provedor_msg_id"`
+	ZaapID                *string          `json:"zaap_id"`
+	Status                string           `json:"status"`
+	Tentativas            int32            `json:"tentativas"`
+	TentarEm              pgtype.Timestamp `json:"tentar_em"`
+	PayloadBruto          []byte           `json:"payload_bruto"`
+	CriadoEm              pgtype.Timestamp `json:"criado_em"`
+	HashAnterior          *string          `json:"hash_anterior"`
+	Hash                  *string          `json:"hash"`
+	UltimoErro            *string          `json:"ultimo_erro"`
+	AplicacaoID           *int64           `json:"aplicacao_id"`
+	DlpIsentoPor          *string          `json:"dlp_isento_por"`
+	Automatica            bool             `json:"automatica"`
+	Autor                 *string          `json:"autor"`
+	RespondeAID           *int64           `json:"responde_a_id"`
+	EditadaEm             pgtype.Timestamp `json:"editada_em"`
+	ExcluidaEm            pgtype.Timestamp `json:"excluida_em"`
+	ExcluidaPor           *string          `json:"excluida_por"`
+	ParticipanteTelefone  *string          `json:"participante_telefone"`
+	ParticipanteLid       *string          `json:"participante_lid"`
+	ParticipanteNome      *string          `json:"participante_nome"`
+	Notificacao           *string          `json:"notificacao"`
+	NotificacaoParametros []string         `json:"notificacao_parametros"`
 }
 
 type MensagemAlteracao struct {

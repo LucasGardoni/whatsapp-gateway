@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -110,6 +111,8 @@ type contatoResponse struct {
 	Nome         *string `json:"nome"`
 	TelefoneE164 *string `json:"telefone_e164"`
 	ChatLid      *string `json:"chat_lid"`
+	// GrupoID preenchido = a conversa e de um grupo (migration 00031).
+	GrupoID *string `json:"grupo_id"`
 }
 
 type ultimaMensagemResponse struct {
@@ -129,6 +132,9 @@ type conversaResponse struct {
 	FechadaEm      *string                 `json:"fechada_em"`
 	UltimaMensagem *ultimaMensagemResponse `json:"ultima_mensagem"`
 	NaoLidas       int                     `json:"nao_lidas"`
+	Grupo          bool                    `json:"grupo"`
+	// NaoLidasLeitor e nao_lidas para o `leitor` pedido (grupos).
+	NaoLidasLeitor int `json:"nao_lidas_leitor"`
 }
 
 type listarConversasResponse struct {
@@ -221,8 +227,14 @@ func (h *ConversasV1) Listar(w http.ResponseWriter, r *http.Request) {
 	// middleware) o id 0 nao casa com leitura nenhuma: tudo conta como nao lido.
 	app, _ := middleware.AplicacaoDoContexto(r.Context())
 
+	leitor, ok := leitorValido(w, q.Get("leitor"))
+	if !ok {
+		return
+	}
+
 	linhas, err := store.New(h.pool).ListarConversas(r.Context(), store.ListarConversasParams{
 		AplicacaoID:     app.ID,
+		Leitor:          leitor,
 		CaixaID:         caixaID,
 		Estado:          estado,
 		Desde:           desde,
@@ -246,9 +258,12 @@ func (h *ConversasV1) Listar(w http.ResponseWriter, r *http.Request) {
 				Nome:         l.ContatoNome,
 				TelefoneE164: l.ContatoTelefone,
 				ChatLid:      l.ContatoChatLid,
+				GrupoID:      l.ContatoGrupoID,
 			},
-			AbertaEm: formatarTimestamp(l.AbertaEm),
-			NaoLidas: int(l.NaoLidas),
+			AbertaEm:       formatarTimestamp(l.AbertaEm),
+			NaoLidas:       int(l.NaoLidas),
+			Grupo:          l.ContatoGrupoID != nil,
+			NaoLidasLeitor: int(l.NaoLidasLeitor),
 		}
 		if l.FechadaEm.Valid {
 			s := formatarTimestamp(l.FechadaEm)
@@ -303,6 +318,18 @@ type mensagemConversaResponse struct {
 	ExcluidaEm  *string            `json:"excluida_em"`
 	ExcluidaPor *string            `json:"excluida_por"`
 	RespondeA   *respondeAResponse `json:"responde_a"`
+	// Participante e quem falou no grupo; nulo fora de grupo e na saida.
+	Participante *participanteResponse `json:"participante"`
+	// Notificacao e o evento do grupo (GROUP_PARTICIPANT_ADD...) com os
+	// parametros da z-api; nulo em mensagem comum.
+	Notificacao           *string  `json:"notificacao"`
+	NotificacaoParametros []string `json:"notificacao_parametros"`
+}
+
+type participanteResponse struct {
+	Telefone *string `json:"telefone"`
+	Lid      *string `json:"lid"`
+	Nome     *string `json:"nome"`
 }
 
 // respondeAResponse e a mensagem citada, so o bastante para o quote.
@@ -392,6 +419,13 @@ func (h *ConversasV1) Mensagens(w http.ResponseWriter, r *http.Request) {
 			EditadaEm:     timestampOuNulo(l.EditadaEm),
 			ExcluidaEm:    timestampOuNulo(l.ExcluidaEm),
 			ExcluidaPor:   l.ExcluidaPor,
+			Notificacao:   l.Notificacao,
+		}
+		if l.Notificacao != nil {
+			item.NotificacaoParametros = l.NotificacaoParametros
+		}
+		if l.ParticipanteTelefone != nil || l.ParticipanteLid != nil || l.ParticipanteNome != nil {
+			item.Participante = &participanteResponse{Telefone: l.ParticipanteTelefone, Lid: l.ParticipanteLid, Nome: l.ParticipanteNome}
 		}
 		if l.TextoEditado != nil {
 			item.Texto = l.TextoEditado
@@ -483,6 +517,20 @@ func (h *ConversasV1) Midia(w http.ResponseWriter, r *http.Request) {
 
 type marcarLidaRequest struct {
 	AteID *int64 `json:"ate_id"`
+	// Leitor e a pessoa dentro da aplicacao ("usuario:808"); vazio = a aplicacao.
+	Leitor string `json:"leitor"`
+}
+
+const tamanhoMaximoLeitor = 64
+
+// leitorValido aceita vazio ou um identificador curto sem espaco.
+func leitorValido(w http.ResponseWriter, bruto string) (string, bool) {
+	leitor := strings.TrimSpace(bruto)
+	if len(leitor) > tamanhoMaximoLeitor || strings.ContainsFunc(leitor, unicode.IsSpace) {
+		http.Error(w, "leitor invalido", http.StatusBadRequest)
+		return "", false
+	}
+	return leitor, true
 }
 
 // MarcarLida atende POST /v1/conversas/{id}/lida (G6). Corpo opcional:
@@ -517,6 +565,10 @@ func (h *ConversasV1) MarcarLida(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "ate_id deve ser positivo", http.StatusBadRequest)
 		return
 	}
+	leitor, ok := leitorValido(w, req.Leitor)
+	if !ok {
+		return
+	}
 
 	queries := store.New(h.pool)
 	if _, err := queries.BuscarConversaComContatoPorID(r.Context(), conversaID); err != nil {
@@ -534,6 +586,7 @@ func (h *ConversasV1) MarcarLida(w http.ResponseWriter, r *http.Request) {
 	if _, err := queries.MarcarConversaLida(r.Context(), store.MarcarConversaLidaParams{
 		AplicacaoID: app.ID,
 		ConversaID:  conversaID,
+		Leitor:      leitor,
 		AteID:       req.AteID,
 	}); err != nil {
 		slog.Error("conversas v1: marcar lida", "conversa_id", conversaID, "aplicacao", app.Codigo, "erro", err)
@@ -666,6 +719,7 @@ func (h *ConversasV1) Abrir(w http.ResponseWriter, r *http.Request) {
 			Nome:         contato.ContatoNome,
 			TelefoneE164: contato.ContatoTelefone,
 			ChatLid:      contato.ContatoChatLid,
+			GrupoID:      contato.ContatoGrupoID,
 		},
 	})
 }
@@ -746,4 +800,39 @@ func previa(tipo string, texto *string) string {
 	}
 	runas := []rune(t)
 	return string(runas[:tamanhoPreviaMaximo]) + "…"
+}
+
+type leituraResponse struct {
+	Leitor       string `json:"leitor"`
+	UltimaLidaID int64  `json:"ultima_lida_id"`
+	LidaEm       string `json:"lida_em"`
+}
+
+// Leituras atende GET /v1/conversas/{id}/leituras: ate onde cada leitor da
+// aplicacao leu. Alimenta o "visto por" do grupo.
+func (h *ConversasV1) Leituras(w http.ResponseWriter, r *http.Request) {
+	app, autenticada := middleware.AplicacaoDoContexto(r.Context())
+	if !autenticada {
+		http.Error(w, "nao autorizado", http.StatusUnauthorized)
+		return
+	}
+	conversaID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || conversaID <= 0 {
+		http.Error(w, "id de conversa invalido", http.StatusBadRequest)
+		return
+	}
+	linhas, err := store.New(h.pool).ListarLeiturasDaConversa(r.Context(), store.ListarLeiturasDaConversaParams{
+		AplicacaoID: app.ID,
+		ConversaID:  conversaID,
+	})
+	if err != nil {
+		slog.Error("conversas v1: listar leituras", "conversa_id", conversaID, "erro", err)
+		http.Error(w, "erro interno", http.StatusInternalServerError)
+		return
+	}
+	resp := make([]leituraResponse, 0, len(linhas))
+	for _, l := range linhas {
+		resp = append(resp, leituraResponse{Leitor: l.Leitor, UltimaLidaID: l.UltimaLidaID, LidaEm: l.AtualizadoEm.Time.Format(layoutTempoResposta)})
+	}
+	responderJSON(w, map[string]any{"conversa_id": conversaID, "leituras": resp})
 }

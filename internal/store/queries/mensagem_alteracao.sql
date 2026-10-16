@@ -10,7 +10,7 @@ SELECT m.id, m.conversa_id, m.direcao, m.tipo, m.texto, m.status, m.provedor_msg
        m.autor, m.excluida_em,
        EXTRACT(EPOCH FROM (LOCALTIMESTAMP - m.criado_em))::float8 AS idade_segundos,
        c.caixa_id, c.corretor_id,
-       l.chat_lid, l.telefone_e164
+       l.chat_lid, l.telefone_e164, l.grupo_id
   FROM mensagem m
   JOIN conversa c ON c.id = m.conversa_id
   JOIN lead l ON l.id = c.lead_id

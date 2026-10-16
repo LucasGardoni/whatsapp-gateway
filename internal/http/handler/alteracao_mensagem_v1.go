@@ -367,8 +367,12 @@ func motivoSemAlteracao(m store.BuscarMensagemParaAlterarRow) string {
 	return ""
 }
 
-// destinoDaAlteracao e o mesmo destinatario do envio (outbox): @lid primeiro.
+// destinoDaAlteracao e o mesmo destinatario do envio (outbox): grupo, @lid,
+// telefone.
 func destinoDaAlteracao(m store.BuscarMensagemParaAlterarRow) string {
+	if m.GrupoID != nil && *m.GrupoID != "" {
+		return *m.GrupoID
+	}
 	if m.ChatLid != nil && *m.ChatLid != "" {
 		return *m.ChatLid
 	}

@@ -447,8 +447,11 @@ func confiancaParaNumeric(v float64) pgtype.Numeric {
 
 // destinatario prefere chat_lid -- e a identidade primaria do contato
 // (secao 4.3). Cai para telefone_e164 so quando o lead ainda nao tem lid
-// resolvido.
+// resolvido. Grupo vai sempre pelo id do grupo (migration 00031).
 func destinatario(m store.SelecionarPendentesParaEnvioRow) (string, error) {
+	if m.GrupoID != nil && *m.GrupoID != "" {
+		return *m.GrupoID, nil
+	}
 	if m.ChatLid != nil && *m.ChatLid != "" {
 		return *m.ChatLid, nil
 	}

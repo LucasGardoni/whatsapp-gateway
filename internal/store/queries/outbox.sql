@@ -24,7 +24,7 @@ WITH selecionadas AS (
 -- tipo/midia_caminho alimentam o envio de midia (fase 9).
 -- responde_a_provedor_msg_id e a mensagem citada (migration 00030); nula
 -- quando a citada ainda nao saiu, e ai o envio segue sem citar.
-SELECT a.id, a.conversa_id, a.tipo, a.texto, a.midia_caminho, a.tentativas, a.dlp_isento_por, a.automatica, lead.chat_lid, lead.telefone_e164, c.corretor_id,
+SELECT a.id, a.conversa_id, a.tipo, a.texto, a.midia_caminho, a.tentativas, a.dlp_isento_por, a.automatica, lead.chat_lid, lead.telefone_e164, lead.grupo_id, c.corretor_id,
        ref.provedor_msg_id AS responde_a_provedor_msg_id
 FROM atualizadas a
 JOIN conversa c ON c.id = a.conversa_id

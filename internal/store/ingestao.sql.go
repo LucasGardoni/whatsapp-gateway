@@ -10,7 +10,7 @@ import (
 )
 
 const buscarLeadRecenteParaDedup = `-- name: BuscarLeadRecenteParaDedup :one
-SELECT id, nome, telefone_e164, chat_lid, origem, empreendimento_id, lote_id, estado, corretor_id, criado_em, ad_source_id, ctwa_clid, estagio_comercial, estagio_entrou_em, valor, nome_empreendimento, tipologia, forma_pagamento, proximo_passo_texto, proximo_passo_em, notas FROM lead
+SELECT id, nome, telefone_e164, chat_lid, origem, empreendimento_id, lote_id, estado, corretor_id, criado_em, ad_source_id, ctwa_clid, estagio_comercial, estagio_entrou_em, valor, nome_empreendimento, tipologia, forma_pagamento, proximo_passo_texto, proximo_passo_em, notas, grupo_id FROM lead
 WHERE telefone_e164 = $1
   AND empreendimento_id IS NOT DISTINCT FROM $2
   AND criado_em >= LOCALTIMESTAMP - make_interval(secs => $3::double precision)
@@ -56,6 +56,7 @@ func (q *Queries) BuscarLeadRecenteParaDedup(ctx context.Context, arg BuscarLead
 		&i.ProximoPassoTexto,
 		&i.ProximoPassoEm,
 		&i.Notas,
+		&i.GrupoID,
 	)
 	return i, err
 }
@@ -63,7 +64,7 @@ func (q *Queries) BuscarLeadRecenteParaDedup(ctx context.Context, arg BuscarLead
 const criarLeadDeIngestao = `-- name: CriarLeadDeIngestao :one
 INSERT INTO lead (nome, telefone_e164, origem, empreendimento_id, ad_source_id, ctwa_clid, estado)
 VALUES ($1, $2, $3, $4, $5, $6, 'novo')
-RETURNING id, nome, telefone_e164, chat_lid, origem, empreendimento_id, lote_id, estado, corretor_id, criado_em, ad_source_id, ctwa_clid, estagio_comercial, estagio_entrou_em, valor, nome_empreendimento, tipologia, forma_pagamento, proximo_passo_texto, proximo_passo_em, notas
+RETURNING id, nome, telefone_e164, chat_lid, origem, empreendimento_id, lote_id, estado, corretor_id, criado_em, ad_source_id, ctwa_clid, estagio_comercial, estagio_entrou_em, valor, nome_empreendimento, tipologia, forma_pagamento, proximo_passo_texto, proximo_passo_em, notas, grupo_id
 `
 
 type CriarLeadDeIngestaoParams struct {
@@ -110,6 +111,7 @@ func (q *Queries) CriarLeadDeIngestao(ctx context.Context, arg CriarLeadDeIngest
 		&i.ProximoPassoTexto,
 		&i.ProximoPassoEm,
 		&i.Notas,
+		&i.GrupoID,
 	)
 	return i, err
 }

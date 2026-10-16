@@ -146,7 +146,7 @@ func (q *Queries) BuscarConversaAbertaPorLead(ctx context.Context, arg BuscarCon
 }
 
 const buscarLeadPorChatLid = `-- name: BuscarLeadPorChatLid :one
-SELECT id, nome, telefone_e164, chat_lid, origem, empreendimento_id, lote_id, estado, corretor_id, criado_em, ad_source_id, ctwa_clid, estagio_comercial, estagio_entrou_em, valor, nome_empreendimento, tipologia, forma_pagamento, proximo_passo_texto, proximo_passo_em, notas FROM lead WHERE chat_lid = $1
+SELECT id, nome, telefone_e164, chat_lid, origem, empreendimento_id, lote_id, estado, corretor_id, criado_em, ad_source_id, ctwa_clid, estagio_comercial, estagio_entrou_em, valor, nome_empreendimento, tipologia, forma_pagamento, proximo_passo_texto, proximo_passo_em, notas, grupo_id FROM lead WHERE chat_lid = $1
 `
 
 func (q *Queries) BuscarLeadPorChatLid(ctx context.Context, chatLid *string) (Lead, error) {
@@ -174,12 +174,13 @@ func (q *Queries) BuscarLeadPorChatLid(ctx context.Context, chatLid *string) (Le
 		&i.ProximoPassoTexto,
 		&i.ProximoPassoEm,
 		&i.Notas,
+		&i.GrupoID,
 	)
 	return i, err
 }
 
 const buscarLeadPorTelefone = `-- name: BuscarLeadPorTelefone :one
-SELECT id, nome, telefone_e164, chat_lid, origem, empreendimento_id, lote_id, estado, corretor_id, criado_em, ad_source_id, ctwa_clid, estagio_comercial, estagio_entrou_em, valor, nome_empreendimento, tipologia, forma_pagamento, proximo_passo_texto, proximo_passo_em, notas FROM lead WHERE telefone_e164 = $1
+SELECT id, nome, telefone_e164, chat_lid, origem, empreendimento_id, lote_id, estado, corretor_id, criado_em, ad_source_id, ctwa_clid, estagio_comercial, estagio_entrou_em, valor, nome_empreendimento, tipologia, forma_pagamento, proximo_passo_texto, proximo_passo_em, notas, grupo_id FROM lead WHERE telefone_e164 = $1
 `
 
 func (q *Queries) BuscarLeadPorTelefone(ctx context.Context, telefoneE164 *string) (Lead, error) {
@@ -207,12 +208,13 @@ func (q *Queries) BuscarLeadPorTelefone(ctx context.Context, telefoneE164 *strin
 		&i.ProximoPassoTexto,
 		&i.ProximoPassoEm,
 		&i.Notas,
+		&i.GrupoID,
 	)
 	return i, err
 }
 
 const buscarLeadPorTokenNoTexto = `-- name: BuscarLeadPorTokenNoTexto :one
-SELECT l.id, l.nome, l.telefone_e164, l.chat_lid, l.origem, l.empreendimento_id, l.lote_id, l.estado, l.corretor_id, l.criado_em, l.ad_source_id, l.ctwa_clid, l.estagio_comercial, l.estagio_entrou_em, l.valor, l.nome_empreendimento, l.tipologia, l.forma_pagamento, l.proximo_passo_texto, l.proximo_passo_em, l.notas FROM lead l
+SELECT l.id, l.nome, l.telefone_e164, l.chat_lid, l.origem, l.empreendimento_id, l.lote_id, l.estado, l.corretor_id, l.criado_em, l.ad_source_id, l.ctwa_clid, l.estagio_comercial, l.estagio_entrou_em, l.valor, l.nome_empreendimento, l.tipologia, l.forma_pagamento, l.proximo_passo_texto, l.proximo_passo_em, l.notas, l.grupo_id FROM lead l
 JOIN disparo d ON d.lead_id = l.id
 WHERE d.token <> '' AND position(d.token IN $1::text) > 0
 ORDER BY d.enviado_em DESC
@@ -247,6 +249,7 @@ func (q *Queries) BuscarLeadPorTokenNoTexto(ctx context.Context, texto string) (
 		&i.ProximoPassoTexto,
 		&i.ProximoPassoEm,
 		&i.Notas,
+		&i.GrupoID,
 	)
 	return i, err
 }
@@ -277,7 +280,7 @@ func (q *Queries) CriarConversa(ctx context.Context, arg CriarConversaParams) (C
 const criarLead = `-- name: CriarLead :one
 INSERT INTO lead (nome, telefone_e164, chat_lid, origem, estado)
 VALUES ($1, $2, $3, $4, 'novo')
-RETURNING id, nome, telefone_e164, chat_lid, origem, empreendimento_id, lote_id, estado, corretor_id, criado_em, ad_source_id, ctwa_clid, estagio_comercial, estagio_entrou_em, valor, nome_empreendimento, tipologia, forma_pagamento, proximo_passo_texto, proximo_passo_em, notas
+RETURNING id, nome, telefone_e164, chat_lid, origem, empreendimento_id, lote_id, estado, corretor_id, criado_em, ad_source_id, ctwa_clid, estagio_comercial, estagio_entrou_em, valor, nome_empreendimento, tipologia, forma_pagamento, proximo_passo_texto, proximo_passo_em, notas, grupo_id
 `
 
 type CriarLeadParams struct {
@@ -317,6 +320,7 @@ func (q *Queries) CriarLead(ctx context.Context, arg CriarLeadParams) (Lead, err
 		&i.ProximoPassoTexto,
 		&i.ProximoPassoEm,
 		&i.Notas,
+		&i.GrupoID,
 	)
 	return i, err
 }

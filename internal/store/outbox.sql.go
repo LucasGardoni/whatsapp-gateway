@@ -100,7 +100,7 @@ WITH selecionadas AS (
     WHERE m.id = s.id
     RETURNING m.id, m.conversa_id, m.tipo, m.texto, m.midia_caminho, m.tentativas, m.dlp_isento_por, m.automatica, m.responde_a_id
 )
-SELECT a.id, a.conversa_id, a.tipo, a.texto, a.midia_caminho, a.tentativas, a.dlp_isento_por, a.automatica, lead.chat_lid, lead.telefone_e164, c.corretor_id,
+SELECT a.id, a.conversa_id, a.tipo, a.texto, a.midia_caminho, a.tentativas, a.dlp_isento_por, a.automatica, lead.chat_lid, lead.telefone_e164, lead.grupo_id, c.corretor_id,
        ref.provedor_msg_id AS responde_a_provedor_msg_id
 FROM atualizadas a
 JOIN conversa c ON c.id = a.conversa_id
@@ -124,6 +124,7 @@ type SelecionarPendentesParaEnvioRow struct {
 	Automatica             bool    `json:"automatica"`
 	ChatLid                *string `json:"chat_lid"`
 	TelefoneE164           *string `json:"telefone_e164"`
+	GrupoID                *string `json:"grupo_id"`
 	CorretorID             *int64  `json:"corretor_id"`
 	RespondeAProvedorMsgID *string `json:"responde_a_provedor_msg_id"`
 }
@@ -158,6 +159,7 @@ func (q *Queries) SelecionarPendentesParaEnvio(ctx context.Context, arg Selecion
 			&i.Automatica,
 			&i.ChatLid,
 			&i.TelefoneE164,
+			&i.GrupoID,
 			&i.CorretorID,
 			&i.RespondeAProvedorMsgID,
 		); err != nil {

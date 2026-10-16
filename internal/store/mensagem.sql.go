@@ -42,7 +42,7 @@ VALUES (
     $8,
     $9
 )
-RETURNING id, conversa_id, direcao, tipo, texto, midia_caminho, provedor, provedor_msg_id, zaap_id, status, tentativas, tentar_em, payload_bruto, criado_em, hash_anterior, hash, ultimo_erro, aplicacao_id, dlp_isento_por, automatica, autor, responde_a_id, editada_em, excluida_em, excluida_por
+RETURNING id, conversa_id, direcao, tipo, texto, midia_caminho, provedor, provedor_msg_id, zaap_id, status, tentativas, tentar_em, payload_bruto, criado_em, hash_anterior, hash, ultimo_erro, aplicacao_id, dlp_isento_por, automatica, autor, responde_a_id, editada_em, excluida_em, excluida_por, participante_telefone, participante_lid, participante_nome, notificacao, notificacao_parametros
 `
 
 type CriarMensagemSaidaParams struct {
@@ -115,6 +115,11 @@ func (q *Queries) CriarMensagemSaida(ctx context.Context, arg CriarMensagemSaida
 		&i.EditadaEm,
 		&i.ExcluidaEm,
 		&i.ExcluidaPor,
+		&i.ParticipanteTelefone,
+		&i.ParticipanteLid,
+		&i.ParticipanteNome,
+		&i.Notificacao,
+		&i.NotificacaoParametros,
 	)
 	return i, err
 }

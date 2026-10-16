@@ -17,7 +17,11 @@ type PayloadRecebido struct {
 	IsStatusReply  bool   `json:"isStatusReply"`
 	SenderName     string `json:"senderName"`
 	ChatName       string `json:"chatName"`
-	Type           string `json:"type"`
+
+	// so em grupo: quem falou (ou quem fez a acao, num evento do grupo).
+	ParticipantPhone string `json:"participantPhone"`
+	ParticipantLid   string `json:"participantLid"`
+	Type             string `json:"type"`
 
 	Text     *ConteudoTexto     `json:"text,omitempty"`
 	Image    *ConteudoImagem    `json:"image,omitempty"`

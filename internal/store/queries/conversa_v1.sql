@@ -10,7 +10,8 @@
 -- listar). corretor_id fica de fora -- e divida legada (D2 do plano),
 -- nao entra em contrato novo.
 SELECT c.id, c.aberta_em, c.fechada_em, cx.codigo AS caixa,
-       l.nome AS contato_nome, l.telefone_e164 AS contato_telefone, l.chat_lid AS contato_chat_lid
+       l.nome AS contato_nome, l.telefone_e164 AS contato_telefone, l.chat_lid AS contato_chat_lid,
+       l.grupo_id AS contato_grupo_id
   FROM conversa c
   JOIN caixa cx ON cx.id = c.caixa_id
   JOIN lead l ON l.id = c.lead_id
@@ -44,6 +45,7 @@ SELECT
     l.nome AS contato_nome,
     l.telefone_e164 AS contato_telefone,
     l.chat_lid AS contato_chat_lid,
+    l.grupo_id AS contato_grupo_id,
     ultima.id AS ultima_mensagem_id,
     ultima.direcao AS ultima_mensagem_direcao,
     ultima.tipo AS ultima_mensagem_tipo,
@@ -60,8 +62,21 @@ SELECT
         AND mn.id > COALESCE((SELECT cl.ultima_lida_id
                                 FROM conversa_leitura cl
                                WHERE cl.conversa_id = c.id
-                                 AND cl.aplicacao_id = sqlc.arg(aplicacao_id)::bigint), 0)
-    )::int AS nao_lidas
+                                 AND cl.aplicacao_id = sqlc.arg(aplicacao_id)::bigint
+                                 AND cl.leitor = ''), 0)
+    )::int AS nao_lidas,
+    -- grupos (migration 00031): a mesma contagem para a pessoa pedida em
+    -- `leitor`; sem leitor, igual a nao_lidas.
+    (SELECT count(*)
+       FROM mensagem mn
+      WHERE mn.conversa_id = c.id
+        AND mn.direcao = 'entrada'
+        AND mn.id > COALESCE((SELECT cl.ultima_lida_id
+                                FROM conversa_leitura cl
+                               WHERE cl.conversa_id = c.id
+                                 AND cl.aplicacao_id = sqlc.arg(aplicacao_id)::bigint
+                                 AND cl.leitor = sqlc.arg(leitor)::text), 0)
+    )::int AS nao_lidas_leitor
 FROM conversa c
 JOIN caixa cx ON cx.id = c.caixa_id
 JOIN lead l ON l.id = c.lead_id
@@ -104,6 +119,8 @@ WITH ultima_edicao AS (
 )
 SELECT m.id, m.direcao, m.tipo, m.texto, m.midia_caminho, m.status, m.criado_em,
        m.autor, m.editada_em, m.excluida_em, m.excluida_por, m.responde_a_id,
+       m.participante_telefone, m.participante_lid, m.participante_nome,
+       m.notificacao, m.notificacao_parametros,
        ed.texto AS texto_editado,
        ref.direcao AS responde_a_direcao,
        ref.tipo AS responde_a_tipo,
@@ -121,13 +138,13 @@ SELECT m.id, m.direcao, m.tipo, m.texto, m.midia_caminho, m.status, m.criado_em,
 -- G6. ate_id nulo = ate a ultima mensagem da conversa. GREATEST porque
 -- leitura nao retrocede: duas abas marcando fora de ordem nao podem fazer
 -- o badge reaparecer. Conversa sem mensagem nao grava nada (0 linhas).
-INSERT INTO conversa_leitura (aplicacao_id, conversa_id, ultima_lida_id)
-SELECT sqlc.arg(aplicacao_id)::bigint, c.id,
+INSERT INTO conversa_leitura (aplicacao_id, conversa_id, leitor, ultima_lida_id)
+SELECT sqlc.arg(aplicacao_id)::bigint, c.id, sqlc.arg(leitor)::text,
        COALESCE(sqlc.narg(ate_id)::bigint, (SELECT max(m.id) FROM mensagem m WHERE m.conversa_id = c.id))
   FROM conversa c
  WHERE c.id = sqlc.arg(conversa_id)::bigint
    AND COALESCE(sqlc.narg(ate_id)::bigint, (SELECT max(m.id) FROM mensagem m WHERE m.conversa_id = c.id)) IS NOT NULL
-ON CONFLICT (aplicacao_id, conversa_id) DO UPDATE
+ON CONFLICT (aplicacao_id, conversa_id, leitor) DO UPDATE
    SET ultima_lida_id = GREATEST(conversa_leitura.ultima_lida_id, EXCLUDED.ultima_lida_id),
        atualizado_em  = now();
 
@@ -149,3 +166,12 @@ SELECT tipo, texto, midia_caminho
   FROM mensagem
  WHERE id = sqlc.arg(mensagem_id)
    AND conversa_id = sqlc.arg(conversa_id);
+
+-- name: ListarLeiturasDaConversa :many
+-- quem da aplicacao leu ate onde, para o "visto por" do grupo.
+SELECT leitor, ultima_lida_id, atualizado_em
+  FROM conversa_leitura
+ WHERE aplicacao_id = sqlc.arg(aplicacao_id)
+   AND conversa_id = sqlc.arg(conversa_id)
+   AND leitor <> ''
+ ORDER BY leitor;

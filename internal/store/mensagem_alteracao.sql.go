@@ -32,7 +32,7 @@ SELECT m.id, m.conversa_id, m.direcao, m.tipo, m.texto, m.status, m.provedor_msg
        m.autor, m.excluida_em,
        EXTRACT(EPOCH FROM (LOCALTIMESTAMP - m.criado_em))::float8 AS idade_segundos,
        c.caixa_id, c.corretor_id,
-       l.chat_lid, l.telefone_e164
+       l.chat_lid, l.telefone_e164, l.grupo_id
   FROM mensagem m
   JOIN conversa c ON c.id = m.conversa_id
   JOIN lead l ON l.id = c.lead_id
@@ -61,6 +61,7 @@ type BuscarMensagemParaAlterarRow struct {
 	CorretorID    *int64           `json:"corretor_id"`
 	ChatLid       *string          `json:"chat_lid"`
 	TelefoneE164  *string          `json:"telefone_e164"`
+	GrupoID       *string          `json:"grupo_id"`
 }
 
 // Responder citando, editar e excluir (migration 00030). Edicao e exclusao
@@ -87,6 +88,7 @@ func (q *Queries) BuscarMensagemParaAlterar(ctx context.Context, arg BuscarMensa
 		&i.CorretorID,
 		&i.ChatLid,
 		&i.TelefoneE164,
+		&i.GrupoID,
 	)
 	return i, err
 }

@@ -14,7 +14,8 @@ import (
 const buscarConversaComContatoPorID = `-- name: BuscarConversaComContatoPorID :one
 
 SELECT c.id, c.aberta_em, c.fechada_em, cx.codigo AS caixa,
-       l.nome AS contato_nome, l.telefone_e164 AS contato_telefone, l.chat_lid AS contato_chat_lid
+       l.nome AS contato_nome, l.telefone_e164 AS contato_telefone, l.chat_lid AS contato_chat_lid,
+       l.grupo_id AS contato_grupo_id
   FROM conversa c
   JOIN caixa cx ON cx.id = c.caixa_id
   JOIN lead l ON l.id = c.lead_id
@@ -29,6 +30,7 @@ type BuscarConversaComContatoPorIDRow struct {
 	ContatoNome     *string          `json:"contato_nome"`
 	ContatoTelefone *string          `json:"contato_telefone"`
 	ContatoChatLid  *string          `json:"contato_chat_lid"`
+	ContatoGrupoID  *string          `json:"contato_grupo_id"`
 }
 
 // G2/G3 do barramento (docs/PLANO_MULTICAIXA_E_CONVERSAS.md): API de
@@ -51,6 +53,7 @@ func (q *Queries) BuscarConversaComContatoPorID(ctx context.Context, id int64) (
 		&i.ContatoNome,
 		&i.ContatoTelefone,
 		&i.ContatoChatLid,
+		&i.ContatoGrupoID,
 	)
 	return i, err
 }
@@ -97,6 +100,7 @@ SELECT
     l.nome AS contato_nome,
     l.telefone_e164 AS contato_telefone,
     l.chat_lid AS contato_chat_lid,
+    l.grupo_id AS contato_grupo_id,
     ultima.id AS ultima_mensagem_id,
     ultima.direcao AS ultima_mensagem_direcao,
     ultima.tipo AS ultima_mensagem_tipo,
@@ -113,34 +117,48 @@ SELECT
         AND mn.id > COALESCE((SELECT cl.ultima_lida_id
                                 FROM conversa_leitura cl
                                WHERE cl.conversa_id = c.id
-                                 AND cl.aplicacao_id = $1::bigint), 0)
-    )::int AS nao_lidas
+                                 AND cl.aplicacao_id = $1::bigint
+                                 AND cl.leitor = ''), 0)
+    )::int AS nao_lidas,
+    -- grupos (migration 00031): a mesma contagem para a pessoa pedida em
+    -- ` + "`" + `leitor` + "`" + `; sem leitor, igual a nao_lidas.
+    (SELECT count(*)
+       FROM mensagem mn
+      WHERE mn.conversa_id = c.id
+        AND mn.direcao = 'entrada'
+        AND mn.id > COALESCE((SELECT cl.ultima_lida_id
+                                FROM conversa_leitura cl
+                               WHERE cl.conversa_id = c.id
+                                 AND cl.aplicacao_id = $1::bigint
+                                 AND cl.leitor = $2::text), 0)
+    )::int AS nao_lidas_leitor
 FROM conversa c
 JOIN caixa cx ON cx.id = c.caixa_id
 JOIN lead l ON l.id = c.lead_id
 LEFT JOIN ultima_por_conversa ultima ON ultima.conversa_id = c.id
 WHERE
     -- G1: caixa nula = todas.
-    ($2::bigint IS NULL OR c.caixa_id = $2::bigint)
+    ($3::bigint IS NULL OR c.caixa_id = $3::bigint)
     AND (
-        $3::text = 'todas'
-        OR ($3::text = 'abertas' AND c.fechada_em IS NULL)
-        OR ($3::text = 'fechadas' AND c.fechada_em IS NOT NULL)
-    )
-    AND (
-        $4::timestamp IS NULL
-        OR COALESCE(ultima.criado_em, c.aberta_em) >= $4::timestamp
+        $4::text = 'todas'
+        OR ($4::text = 'abertas' AND c.fechada_em IS NULL)
+        OR ($4::text = 'fechadas' AND c.fechada_em IS NOT NULL)
     )
     AND (
         $5::timestamp IS NULL
-        OR (COALESCE(ultima.criado_em, c.aberta_em), c.id) < ($5::timestamp, $6::bigint)
+        OR COALESCE(ultima.criado_em, c.aberta_em) >= $5::timestamp
+    )
+    AND (
+        $6::timestamp IS NULL
+        OR (COALESCE(ultima.criado_em, c.aberta_em), c.id) < ($6::timestamp, $7::bigint)
     )
 ORDER BY ultima_atividade DESC, c.id DESC
-LIMIT $7
+LIMIT $8
 `
 
 type ListarConversasParams struct {
 	AplicacaoID     int64            `json:"aplicacao_id"`
+	Leitor          string           `json:"leitor"`
 	CaixaID         *int64           `json:"caixa_id"`
 	Estado          string           `json:"estado"`
 	Desde           pgtype.Timestamp `json:"desde"`
@@ -157,6 +175,7 @@ type ListarConversasRow struct {
 	ContatoNome           *string          `json:"contato_nome"`
 	ContatoTelefone       *string          `json:"contato_telefone"`
 	ContatoChatLid        *string          `json:"contato_chat_lid"`
+	ContatoGrupoID        *string          `json:"contato_grupo_id"`
 	UltimaMensagemID      *int64           `json:"ultima_mensagem_id"`
 	UltimaMensagemDirecao *string          `json:"ultima_mensagem_direcao"`
 	UltimaMensagemTipo    *string          `json:"ultima_mensagem_tipo"`
@@ -164,6 +183,7 @@ type ListarConversasRow struct {
 	UltimaMensagemStatus  *string          `json:"ultima_mensagem_status"`
 	UltimaAtividade       pgtype.Timestamp `json:"ultima_atividade"`
 	NaoLidas              int32            `json:"nao_lidas"`
+	NaoLidasLeitor        int32            `json:"nao_lidas_leitor"`
 }
 
 // "ultima_atividade" e a hora da mensagem mais recente da conversa, ou
@@ -182,6 +202,7 @@ type ListarConversasRow struct {
 func (q *Queries) ListarConversas(ctx context.Context, arg ListarConversasParams) ([]ListarConversasRow, error) {
 	rows, err := q.db.Query(ctx, listarConversas,
 		arg.AplicacaoID,
+		arg.Leitor,
 		arg.CaixaID,
 		arg.Estado,
 		arg.Desde,
@@ -204,6 +225,7 @@ func (q *Queries) ListarConversas(ctx context.Context, arg ListarConversasParams
 			&i.ContatoNome,
 			&i.ContatoTelefone,
 			&i.ContatoChatLid,
+			&i.ContatoGrupoID,
 			&i.UltimaMensagemID,
 			&i.UltimaMensagemDirecao,
 			&i.UltimaMensagemTipo,
@@ -211,7 +233,49 @@ func (q *Queries) ListarConversas(ctx context.Context, arg ListarConversasParams
 			&i.UltimaMensagemStatus,
 			&i.UltimaAtividade,
 			&i.NaoLidas,
+			&i.NaoLidasLeitor,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listarLeiturasDaConversa = `-- name: ListarLeiturasDaConversa :many
+SELECT leitor, ultima_lida_id, atualizado_em
+  FROM conversa_leitura
+ WHERE aplicacao_id = $1
+   AND conversa_id = $2
+   AND leitor <> ''
+ ORDER BY leitor
+`
+
+type ListarLeiturasDaConversaParams struct {
+	AplicacaoID int64 `json:"aplicacao_id"`
+	ConversaID  int64 `json:"conversa_id"`
+}
+
+type ListarLeiturasDaConversaRow struct {
+	Leitor       string           `json:"leitor"`
+	UltimaLidaID int64            `json:"ultima_lida_id"`
+	AtualizadoEm pgtype.Timestamp `json:"atualizado_em"`
+}
+
+// quem da aplicacao leu ate onde, para o "visto por" do grupo.
+func (q *Queries) ListarLeiturasDaConversa(ctx context.Context, arg ListarLeiturasDaConversaParams) ([]ListarLeiturasDaConversaRow, error) {
+	rows, err := q.db.Query(ctx, listarLeiturasDaConversa, arg.AplicacaoID, arg.ConversaID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListarLeiturasDaConversaRow
+	for rows.Next() {
+		var i ListarLeiturasDaConversaRow
+		if err := rows.Scan(&i.Leitor, &i.UltimaLidaID, &i.AtualizadoEm); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -233,6 +297,8 @@ WITH ultima_edicao AS (
 )
 SELECT m.id, m.direcao, m.tipo, m.texto, m.midia_caminho, m.status, m.criado_em,
        m.autor, m.editada_em, m.excluida_em, m.excluida_por, m.responde_a_id,
+       m.participante_telefone, m.participante_lid, m.participante_nome,
+       m.notificacao, m.notificacao_parametros,
        ed.texto AS texto_editado,
        ref.direcao AS responde_a_direcao,
        ref.tipo AS responde_a_tipo,
@@ -255,22 +321,27 @@ type ListarMensagensDaConversaParams struct {
 }
 
 type ListarMensagensDaConversaRow struct {
-	ID               int64            `json:"id"`
-	Direcao          string           `json:"direcao"`
-	Tipo             string           `json:"tipo"`
-	Texto            *string          `json:"texto"`
-	MidiaCaminho     *string          `json:"midia_caminho"`
-	Status           string           `json:"status"`
-	CriadoEm         pgtype.Timestamp `json:"criado_em"`
-	Autor            *string          `json:"autor"`
-	EditadaEm        pgtype.Timestamp `json:"editada_em"`
-	ExcluidaEm       pgtype.Timestamp `json:"excluida_em"`
-	ExcluidaPor      *string          `json:"excluida_por"`
-	RespondeAID      *int64           `json:"responde_a_id"`
-	TextoEditado     *string          `json:"texto_editado"`
-	RespondeADirecao *string          `json:"responde_a_direcao"`
-	RespondeATipo    *string          `json:"responde_a_tipo"`
-	RespondeATexto   *string          `json:"responde_a_texto"`
+	ID                    int64            `json:"id"`
+	Direcao               string           `json:"direcao"`
+	Tipo                  string           `json:"tipo"`
+	Texto                 *string          `json:"texto"`
+	MidiaCaminho          *string          `json:"midia_caminho"`
+	Status                string           `json:"status"`
+	CriadoEm              pgtype.Timestamp `json:"criado_em"`
+	Autor                 *string          `json:"autor"`
+	EditadaEm             pgtype.Timestamp `json:"editada_em"`
+	ExcluidaEm            pgtype.Timestamp `json:"excluida_em"`
+	ExcluidaPor           *string          `json:"excluida_por"`
+	RespondeAID           *int64           `json:"responde_a_id"`
+	ParticipanteTelefone  *string          `json:"participante_telefone"`
+	ParticipanteLid       *string          `json:"participante_lid"`
+	ParticipanteNome      *string          `json:"participante_nome"`
+	Notificacao           *string          `json:"notificacao"`
+	NotificacaoParametros []string         `json:"notificacao_parametros"`
+	TextoEditado          *string          `json:"texto_editado"`
+	RespondeADirecao      *string          `json:"responde_a_direcao"`
+	RespondeATipo         *string          `json:"responde_a_tipo"`
+	RespondeATexto        *string          `json:"responde_a_texto"`
 }
 
 // Mesmo contrato do historico do canal interno (secao G2/G3 do plano):
@@ -308,6 +379,11 @@ func (q *Queries) ListarMensagensDaConversa(ctx context.Context, arg ListarMensa
 			&i.ExcluidaEm,
 			&i.ExcluidaPor,
 			&i.RespondeAID,
+			&i.ParticipanteTelefone,
+			&i.ParticipanteLid,
+			&i.ParticipanteNome,
+			&i.Notificacao,
+			&i.NotificacaoParametros,
 			&i.TextoEditado,
 			&i.RespondeADirecao,
 			&i.RespondeATipo,
@@ -324,19 +400,20 @@ func (q *Queries) ListarMensagensDaConversa(ctx context.Context, arg ListarMensa
 }
 
 const marcarConversaLida = `-- name: MarcarConversaLida :execrows
-INSERT INTO conversa_leitura (aplicacao_id, conversa_id, ultima_lida_id)
-SELECT $1::bigint, c.id,
-       COALESCE($2::bigint, (SELECT max(m.id) FROM mensagem m WHERE m.conversa_id = c.id))
+INSERT INTO conversa_leitura (aplicacao_id, conversa_id, leitor, ultima_lida_id)
+SELECT $1::bigint, c.id, $2::text,
+       COALESCE($3::bigint, (SELECT max(m.id) FROM mensagem m WHERE m.conversa_id = c.id))
   FROM conversa c
- WHERE c.id = $3::bigint
-   AND COALESCE($2::bigint, (SELECT max(m.id) FROM mensagem m WHERE m.conversa_id = c.id)) IS NOT NULL
-ON CONFLICT (aplicacao_id, conversa_id) DO UPDATE
+ WHERE c.id = $4::bigint
+   AND COALESCE($3::bigint, (SELECT max(m.id) FROM mensagem m WHERE m.conversa_id = c.id)) IS NOT NULL
+ON CONFLICT (aplicacao_id, conversa_id, leitor) DO UPDATE
    SET ultima_lida_id = GREATEST(conversa_leitura.ultima_lida_id, EXCLUDED.ultima_lida_id),
        atualizado_em  = now()
 `
 
 type MarcarConversaLidaParams struct {
 	AplicacaoID int64  `json:"aplicacao_id"`
+	Leitor      string `json:"leitor"`
 	AteID       *int64 `json:"ate_id"`
 	ConversaID  int64  `json:"conversa_id"`
 }
@@ -345,7 +422,12 @@ type MarcarConversaLidaParams struct {
 // leitura nao retrocede: duas abas marcando fora de ordem nao podem fazer
 // o badge reaparecer. Conversa sem mensagem nao grava nada (0 linhas).
 func (q *Queries) MarcarConversaLida(ctx context.Context, arg MarcarConversaLidaParams) (int64, error) {
-	result, err := q.db.Exec(ctx, marcarConversaLida, arg.AplicacaoID, arg.AteID, arg.ConversaID)
+	result, err := q.db.Exec(ctx, marcarConversaLida,
+		arg.AplicacaoID,
+		arg.Leitor,
+		arg.AteID,
+		arg.ConversaID,
+	)
 	if err != nil {
 		return 0, err
 	}

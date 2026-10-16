@@ -111,6 +111,10 @@ func (h *WebhookZAPI) processarMensagemRecebida(cx caixa.Caixa, payloadBrutoID i
 		return
 	}
 
+	if payload.IsGroup && !payload.IsNewsletter {
+		h.processarGrupo(ctx, cx, payloadBrutoID, corpo, payload)
+		return
+	}
 	if payload.FromMe || payload.IsGroup || payload.IsNewsletter || payload.IsStatusReply {
 		return
 	}
