@@ -250,6 +250,7 @@ func NovoRouter(
 			r.Get("/v1/conversas/{id}/mensagens", conversas.Mensagens)
 			// G10: o arquivo de uma mensagem, para a aplicacao mostrar o anexo.
 			r.Get("/v1/conversas/{id}/mensagens/{mensagem_id}/midia", conversas.Midia)
+			r.Get("/v1/conversas/{id}/foto", conversas.Foto)
 			// editar e apagar para todos mensagem nossa; versoes e o log de
 			// cada alteracao (migration 00030).
 			r.Patch("/v1/conversas/{id}/mensagens/{mensagem_id}", conversas.Editar)

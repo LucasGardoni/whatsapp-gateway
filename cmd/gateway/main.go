@@ -132,7 +132,7 @@ func run() error {
 	eventos := handler.NovoEventos(hub, assinadorSSE, cfg.CORSOrigemCRM, registroMetricas).ComObservador(coletor)
 	zapiAdmin := handler.NovoZAPIAdmin(caixas)
 	canais := handler.NovoCanais(pool)
-	conversas := handler.NovoConversasV1(pool, caixas).ComMidiaDir(cfg.MidiaDir).ComAlteracao(caixas, motorDLP, eventosWhatsApp)
+	conversas := handler.NovoConversasV1(pool, caixas).ComMidiaDir(cfg.MidiaDir).ComAlteracao(caixas, motorDLP, eventosWhatsApp).ComFotos(caixas)
 	contatos := handler.NovoContatosV1(caixas)
 	caixasV1 := handler.NovoCaixasV1(caixas)
 	midias := handler.NovoMidiasV1(cfg.MidiaDir, int64(cfg.MidiaUploadMaxBytes))

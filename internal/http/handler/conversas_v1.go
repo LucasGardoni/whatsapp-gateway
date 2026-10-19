@@ -51,6 +51,8 @@ type ConversasV1 struct {
 	midiaDir string
 	// alteracao liga editar/excluir (ComAlteracao). Nil responde 501.
 	alteracao *alteracaoMensagens
+	// fotos liga a foto de perfil (ComFotos). Nil responde 404.
+	fotos *fotosContato
 }
 
 // caixasV1 e o pedaco de caixa.Registro que as rotas /v1 usam.
