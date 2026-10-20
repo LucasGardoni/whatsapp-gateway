@@ -212,17 +212,18 @@ func (f *fotosContato) buscar(ctx context.Context, c store.BuscarConversaComCont
 	if p == nil {
 		return errSemFoto
 	}
-	phone := identificadorDaFoto(c)
-	if phone == "" {
-		return errSemFoto
-	}
-
 	chamada, cancel := context.WithTimeout(ctx, timeoutFotoContato)
 	defer cancel()
 
-	link, err := p.FotoPerfil(chamada, phone)
-	if err != nil {
-		return err
+	// O primeiro identificador que devolver link vale; sem link em todos = sem foto.
+	link := ""
+	for _, phone := range identificadoresDaFoto(c) {
+		if link, err = p.FotoPerfil(chamada, phone); err != nil {
+			return err
+		}
+		if link != "" {
+			break
+		}
 	}
 	if link == "" {
 		return errSemFoto
@@ -258,13 +259,24 @@ func (f *fotosContato) buscar(ctx context.Context, c store.BuscarConversaComCont
 	return os.Rename(temporario, destino)
 }
 
-// identificadorDaFoto prefere o telefone: e o que a profile-picture documenta.
-// Sem telefone vai o @lid; grupo, o id do grupo.
-func identificadorDaFoto(c store.BuscarConversaComContatoPorIDRow) string {
-	for _, v := range []*string{c.ContatoGrupoID, c.ContatoTelefone, c.ContatoChatLid} {
-		if v != nil && strings.TrimSpace(*v) != "" {
-			return strings.TrimPrefix(strings.TrimSpace(*v), "+")
+// identificadoresDaFoto devolve, em ordem, os jeitos de pedir a foto. A
+// profile-picture so acha pelo numero exato da conta, e muito celular
+// brasileiro antigo esta registrado no WhatsApp sem o nono digito: com o 9
+// gravado aqui, a z-api responde sem foto. Depois vai o @lid. Grupo, so o id.
+func identificadoresDaFoto(c store.BuscarConversaComContatoPorIDRow) []string {
+	if g := strings.TrimSpace(deref(c.ContatoGrupoID)); g != "" {
+		return []string{g}
+	}
+	var ids []string
+	if tel := strings.TrimPrefix(strings.TrimSpace(deref(c.ContatoTelefone)), "+"); tel != "" {
+		ids = append(ids, tel)
+		// 55 + DDD + 9 + 8 digitos
+		if len(tel) == 13 && strings.HasPrefix(tel, "55") && tel[4] == '9' {
+			ids = append(ids, tel[:4]+tel[5:])
 		}
 	}
-	return ""
+	if lid := strings.TrimSpace(deref(c.ContatoChatLid)); lid != "" {
+		ids = append(ids, lid)
+	}
+	return ids
 }
