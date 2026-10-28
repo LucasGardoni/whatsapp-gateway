@@ -86,11 +86,17 @@ func (q *Queries) BuscarMidiaDaMensagem(ctx context.Context, arg BuscarMidiaDaMe
 }
 
 const listarConversas = `-- name: ListarConversas :many
-WITH ultima_por_conversa AS (
-    SELECT DISTINCT ON (m.conversa_id)
-           m.conversa_id, m.id, m.direcao, m.tipo, m.texto, m.status, m.criado_em
-      FROM mensagem m
-     ORDER BY m.conversa_id, m.criado_em DESC, m.id DESC
+WITH ultima_por_conversa AS MATERIALIZED (
+    SELECT u.conversa_id, u.id, u.direcao, u.tipo, u.texto, u.status, u.criado_em
+      FROM conversa cu
+     CROSS JOIN LATERAL (
+            SELECT m.conversa_id, m.id, m.direcao, m.tipo, m.texto, m.status, m.criado_em
+              FROM mensagem m
+             WHERE m.conversa_id = cu.id
+             ORDER BY m.criado_em DESC, m.id DESC
+             LIMIT 1
+           ) u
+     WHERE $3::bigint IS NULL OR cu.caixa_id = $3::bigint
 )
 SELECT
     c.id,
@@ -196,9 +202,15 @@ type ListarConversasRow struct {
 // JOIN quando o lado direito e uma relacao "normal" -- com LATERAL ou
 // subquery por coluna ele gera campo Go NAO-ponteiro para uma coluna que
 // pode vir NULL, e pgx quebra o Scan na primeira conversa sem mensagem
-// (conferido em teste de integracao). DISTINCT ON com a mesma
-// mensagem_conversa_criado_em_idx (migration 00011) evita o agregado
-// sobre a tabela inteira.
+// (conferido em teste de integracao; LEFT JOIN LATERAL direto continua
+// assim no sqlc 1.31). O LATERAL fica DENTRO da tabela derivada.
+//
+// A tabela derivada so olha as conversas da caixa pedida e busca a ultima
+// mensagem de cada uma com LIMIT 1 na mensagem_conversa_criado_em_idx
+// (migration 00011). O DISTINCT ON anterior varria a tabela mensagem
+// inteira, de todas as caixas, a cada listagem (~0,5 s em 10/2026).
+// MATERIALIZED: inline, o planner errava a estimativa e cruzava as duas
+// listas em nested loop (milhoes de comparacoes); assim faz hash join.
 func (q *Queries) ListarConversas(ctx context.Context, arg ListarConversasParams) ([]ListarConversasRow, error) {
 	rows, err := q.db.Query(ctx, listarConversas,
 		arg.AplicacaoID,

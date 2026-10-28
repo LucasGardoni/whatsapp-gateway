@@ -102,7 +102,7 @@ func caixaDaRequisicao(w http.ResponseWriter, r *http.Request, caixas caixasV1, 
 
 const (
 	limitePadraoConversas = 50
-	limiteMaximoConversas = 200
+	limiteMaximoConversas = 500
 	limitePadraoMensagens = 50
 	limiteMaximoMensagens = 500
 	tamanhoPreviaMaximo   = 120
