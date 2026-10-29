@@ -191,6 +191,7 @@ type Mensagem struct {
 	ParticipanteNome      *string          `json:"participante_nome"`
 	Notificacao           *string          `json:"notificacao"`
 	NotificacaoParametros []string         `json:"notificacao_parametros"`
+	EncaminhadaDeID       *int64           `json:"encaminhada_de_id"`
 }
 
 type MensagemAlteracao struct {

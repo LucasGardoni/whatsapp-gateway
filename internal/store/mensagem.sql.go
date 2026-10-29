@@ -7,6 +7,8 @@ package store
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const buscarConversaPorID = `-- name: BuscarConversaPorID :one
@@ -27,8 +29,48 @@ func (q *Queries) BuscarConversaPorID(ctx context.Context, id int64) (Conversa, 
 	return i, err
 }
 
+const buscarMensagemParaEncaminhar = `-- name: BuscarMensagemParaEncaminhar :one
+SELECT m.id, m.tipo, m.texto, m.midia_caminho, m.provedor_msg_id, m.excluida_em, m.notificacao
+  FROM mensagem m
+  JOIN conversa c ON c.id = m.conversa_id
+ WHERE m.id = $1
+   AND c.caixa_id = $2
+`
+
+type BuscarMensagemParaEncaminharParams struct {
+	ID      int64 `json:"id"`
+	CaixaID int64 `json:"caixa_id"`
+}
+
+type BuscarMensagemParaEncaminharRow struct {
+	ID            int64            `json:"id"`
+	Tipo          string           `json:"tipo"`
+	Texto         *string          `json:"texto"`
+	MidiaCaminho  *string          `json:"midia_caminho"`
+	ProvedorMsgID *string          `json:"provedor_msg_id"`
+	ExcluidaEm    pgtype.Timestamp `json:"excluida_em"`
+	Notificacao   *string          `json:"notificacao"`
+}
+
+// POST /v1/mensagens com encaminha_de: a original tem de ser da mesma caixa
+// (o forward-message da z-api so acha mensagem da propria instancia).
+func (q *Queries) BuscarMensagemParaEncaminhar(ctx context.Context, arg BuscarMensagemParaEncaminharParams) (BuscarMensagemParaEncaminharRow, error) {
+	row := q.db.QueryRow(ctx, buscarMensagemParaEncaminhar, arg.ID, arg.CaixaID)
+	var i BuscarMensagemParaEncaminharRow
+	err := row.Scan(
+		&i.ID,
+		&i.Tipo,
+		&i.Texto,
+		&i.MidiaCaminho,
+		&i.ProvedorMsgID,
+		&i.ExcluidaEm,
+		&i.Notificacao,
+	)
+	return i, err
+}
+
 const criarMensagemSaida = `-- name: CriarMensagemSaida :one
-INSERT INTO mensagem (conversa_id, direcao, tipo, texto, midia_caminho, provedor, aplicacao_id, dlp_isento_por, automatica, autor, responde_a_id)
+INSERT INTO mensagem (conversa_id, direcao, tipo, texto, midia_caminho, provedor, aplicacao_id, dlp_isento_por, automatica, autor, responde_a_id, encaminhada_de_id)
 VALUES (
     $1,
     'saida',
@@ -40,21 +82,23 @@ VALUES (
     $6,
     $7,
     $8,
-    $9
+    $9,
+    $10
 )
-RETURNING id, conversa_id, direcao, tipo, texto, midia_caminho, provedor, provedor_msg_id, zaap_id, status, tentativas, tentar_em, payload_bruto, criado_em, hash_anterior, hash, ultimo_erro, aplicacao_id, dlp_isento_por, automatica, autor, responde_a_id, editada_em, excluida_em, excluida_por, participante_telefone, participante_lid, participante_nome, notificacao, notificacao_parametros
+RETURNING id, conversa_id, direcao, tipo, texto, midia_caminho, provedor, provedor_msg_id, zaap_id, status, tentativas, tentar_em, payload_bruto, criado_em, hash_anterior, hash, ultimo_erro, aplicacao_id, dlp_isento_por, automatica, autor, responde_a_id, editada_em, excluida_em, excluida_por, participante_telefone, participante_lid, participante_nome, notificacao, notificacao_parametros, encaminhada_de_id
 `
 
 type CriarMensagemSaidaParams struct {
-	ConversaID   int64   `json:"conversa_id"`
-	Tipo         string  `json:"tipo"`
-	Texto        *string `json:"texto"`
-	MidiaCaminho *string `json:"midia_caminho"`
-	AplicacaoID  *int64  `json:"aplicacao_id"`
-	DlpIsentoPor *string `json:"dlp_isento_por"`
-	Automatica   bool    `json:"automatica"`
-	Autor        *string `json:"autor"`
-	RespondeAID  *int64  `json:"responde_a_id"`
+	ConversaID      int64   `json:"conversa_id"`
+	Tipo            string  `json:"tipo"`
+	Texto           *string `json:"texto"`
+	MidiaCaminho    *string `json:"midia_caminho"`
+	AplicacaoID     *int64  `json:"aplicacao_id"`
+	DlpIsentoPor    *string `json:"dlp_isento_por"`
+	Automatica      bool    `json:"automatica"`
+	Autor           *string `json:"autor"`
+	RespondeAID     *int64  `json:"responde_a_id"`
+	EncaminhadaDeID *int64  `json:"encaminhada_de_id"`
 }
 
 // mensagem criada pelo CRM via POST /api/mensagens (fase 7). Direcao e
@@ -74,8 +118,9 @@ type CriarMensagemSaidaParams struct {
 // dlp_isento_por so chega aqui depois de o handler conferir
 // aplicacao.pode_isentar_dlp (migration 00027).
 //
-// autor e responde_a_id (migration 00030) ficam fora do hash: sao campos
-// novos, e a cadeia ja gravada continua verificavel com a formula 2.
+// autor, responde_a_id (migration 00030) e encaminhada_de_id (00032) ficam
+// fora do hash: sao campos novos, e a cadeia ja gravada continua
+// verificavel com a formula 2.
 func (q *Queries) CriarMensagemSaida(ctx context.Context, arg CriarMensagemSaidaParams) (Mensagem, error) {
 	row := q.db.QueryRow(ctx, criarMensagemSaida,
 		arg.ConversaID,
@@ -87,6 +132,7 @@ func (q *Queries) CriarMensagemSaida(ctx context.Context, arg CriarMensagemSaida
 		arg.Automatica,
 		arg.Autor,
 		arg.RespondeAID,
+		arg.EncaminhadaDeID,
 	)
 	var i Mensagem
 	err := row.Scan(
@@ -120,6 +166,7 @@ func (q *Queries) CriarMensagemSaida(ctx context.Context, arg CriarMensagemSaida
 		&i.ParticipanteNome,
 		&i.Notificacao,
 		&i.NotificacaoParametros,
+		&i.EncaminhadaDeID,
 	)
 	return i, err
 }

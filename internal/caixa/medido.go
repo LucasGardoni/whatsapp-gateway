@@ -2,6 +2,7 @@ package caixa
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor"
@@ -47,3 +48,25 @@ func (p provedorMedido) Status(ctx context.Context) (*provedor.StatusInstancia, 
 	p.observador.ChamadaProvedor(p.caixa, "status", time.Since(inicio), err)
 	return r, err
 }
+
+var _ provedor.Encaminhador = provedorMedido{}
+
+// Encaminhar repassa ao provedor embrulhado; sem ele, o worker perderia o
+// forward ao conferir a interface no embrulho.
+func (p provedorMedido) Encaminhar(ctx context.Context, msg provedor.Encaminhamento) (*provedor.ResultadoEnvio, error) {
+	encaminhador, ok := p.Provedor.(provedor.Encaminhador)
+	if !ok {
+		return nil, errNaoEncaminha
+	}
+	inicio := time.Now()
+	r, err := encaminhador.Encaminhar(ctx, msg)
+	p.observador.ChamadaProvedor(p.caixa, "encaminhar", time.Since(inicio), err)
+	return r, err
+}
+
+var errNaoEncaminha = naoRetentavel{errors.New("provedor da caixa nao encaminha mensagem")}
+
+// naoRetentavel faz o outbox falhar direto, sem reagendar.
+type naoRetentavel struct{ error }
+
+func (naoRetentavel) Retentavel() bool { return false }

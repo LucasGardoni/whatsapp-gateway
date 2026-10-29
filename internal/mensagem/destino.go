@@ -48,6 +48,10 @@ type Requisicao struct {
 	// Autor identifica quem enviou na aplicacao ("usuario:808"). E o que a
 	// aplicacao confere depois para liberar editar/excluir.
 	Autor string `json:"autor"`
+	// EncaminhaDe e o id (do gateway) da mensagem a encaminhar, de qualquer
+	// conversa da mesma caixa. Com ele, tipo/texto/midia_caminho vem da
+	// original e nao do corpo.
+	EncaminhaDe int64 `json:"encaminha_de"`
 
 	// canal=interno -- opaco de ponta a ponta. ConteudoCifrado chega em
 	// base64 (nonce || ciphertext) so porque JSON nao carrega bytes.

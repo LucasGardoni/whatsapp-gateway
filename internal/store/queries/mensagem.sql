@@ -19,9 +19,10 @@ SELECT * FROM conversa WHERE id = $1;
 -- dlp_isento_por so chega aqui depois de o handler conferir
 -- aplicacao.pode_isentar_dlp (migration 00027).
 --
--- autor e responde_a_id (migration 00030) ficam fora do hash: sao campos
--- novos, e a cadeia ja gravada continua verificavel com a formula 2.
-INSERT INTO mensagem (conversa_id, direcao, tipo, texto, midia_caminho, provedor, aplicacao_id, dlp_isento_por, automatica, autor, responde_a_id)
+-- autor, responde_a_id (migration 00030) e encaminhada_de_id (00032) ficam
+-- fora do hash: sao campos novos, e a cadeia ja gravada continua
+-- verificavel com a formula 2.
+INSERT INTO mensagem (conversa_id, direcao, tipo, texto, midia_caminho, provedor, aplicacao_id, dlp_isento_por, automatica, autor, responde_a_id, encaminhada_de_id)
 VALUES (
     sqlc.arg(conversa_id),
     'saida',
@@ -33,6 +34,16 @@ VALUES (
     sqlc.narg(dlp_isento_por),
     sqlc.arg(automatica),
     sqlc.narg(autor),
-    sqlc.narg(responde_a_id)
+    sqlc.narg(responde_a_id),
+    sqlc.narg(encaminhada_de_id)
 )
 RETURNING *;
+
+-- name: BuscarMensagemParaEncaminhar :one
+-- POST /v1/mensagens com encaminha_de: a original tem de ser da mesma caixa
+-- (o forward-message da z-api so acha mensagem da propria instancia).
+SELECT m.id, m.tipo, m.texto, m.midia_caminho, m.provedor_msg_id, m.excluida_em, m.notificacao
+  FROM mensagem m
+  JOIN conversa c ON c.id = m.conversa_id
+ WHERE m.id = sqlc.arg(id)
+   AND c.caixa_id = sqlc.arg(caixa_id);

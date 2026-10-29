@@ -130,7 +130,7 @@ WITH ultima_edicao AS (
      ORDER BY a.mensagem_id, a.id DESC
 )
 SELECT m.id, m.direcao, m.tipo, m.texto, m.midia_caminho, m.status, m.criado_em,
-       m.autor, m.editada_em, m.excluida_em, m.excluida_por, m.responde_a_id,
+       m.autor, m.editada_em, m.excluida_em, m.excluida_por, m.responde_a_id, m.encaminhada_de_id,
        m.participante_telefone, m.participante_lid, m.participante_nome,
        m.notificacao, m.notificacao_parametros,
        ed.texto AS texto_editado,

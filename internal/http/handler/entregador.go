@@ -153,9 +153,6 @@ type entregadorWhatsApp struct {
 // provedor e do conteudo, nao do consumidor.
 func (e entregadorWhatsApp) Validar(app *middleware.Aplicacao, req mensagem.Requisicao) error {
 	msg := req.ComoWhatsApp()
-	if err := msg.Validar(); err != nil {
-		return err
-	}
 	if strings.TrimSpace(req.DLPIsentoPor) != "" && (app == nil || !app.PodeIsentarDLP) {
 		return recusa(http.StatusForbidden, "aplicacao sem permissao para isentar o dlp")
 	}
@@ -164,6 +161,21 @@ func (e entregadorWhatsApp) Validar(app *middleware.Aplicacao, req mensagem.Requ
 	}
 	if len(req.Autor) > tamanhoMaximoAutor {
 		return recusa(http.StatusBadRequest, "autor longo demais")
+	}
+	// encaminhamento: o conteudo e o da original, lido em Persistir.
+	if req.EncaminhaDe != 0 {
+		switch {
+		case msg.ConversaID == 0:
+			return recusa(http.StatusBadRequest, "conversa_id e obrigatorio")
+		case req.EncaminhaDe < 0:
+			return recusa(http.StatusBadRequest, "encaminha_de invalido")
+		case msg.Texto != "" || msg.MidiaCaminho != "" || req.RespondeA != 0:
+			return recusa(http.StatusBadRequest, "encaminha_de nao aceita texto, midia_caminho nem responde_a")
+		}
+		return nil
+	}
+	if err := msg.Validar(); err != nil {
+		return err
 	}
 	if msg.MidiaCaminho == "" {
 		return nil
@@ -211,16 +223,29 @@ func (e entregadorWhatsApp) Persistir(ctx context.Context, q *store.Queries, app
 		respondeA = &citada
 	}
 
+	var encaminhadaDe *int64
+	if req.EncaminhaDe > 0 {
+		original, err := originalDoEncaminhamento(ctx, q, req.EncaminhaDe, conversa.CaixaID)
+		if err != nil {
+			return Entrega{}, err
+		}
+		msg.Tipo = original.Tipo
+		msg.Texto = deref(original.Texto)
+		msg.MidiaCaminho = deref(original.MidiaCaminho)
+		encaminhadaDe = &original.ID
+	}
+
 	linha, err := q.CriarMensagemSaida(ctx, store.CriarMensagemSaidaParams{
-		ConversaID:   msg.ConversaID,
-		Tipo:         msg.Tipo,
-		Texto:        naoVazio(msg.Texto),
-		MidiaCaminho: naoVazio(msg.MidiaCaminho),
-		AplicacaoID:  aplicacaoID,
-		DlpIsentoPor: naoVazio(strings.TrimSpace(req.DLPIsentoPor)),
-		Automatica:   req.Automatica,
-		Autor:        naoVazio(strings.TrimSpace(req.Autor)),
-		RespondeAID:  respondeA,
+		ConversaID:      msg.ConversaID,
+		Tipo:            msg.Tipo,
+		Texto:           naoVazio(msg.Texto),
+		MidiaCaminho:    naoVazio(msg.MidiaCaminho),
+		AplicacaoID:     aplicacaoID,
+		DlpIsentoPor:    naoVazio(strings.TrimSpace(req.DLPIsentoPor)),
+		Automatica:      req.Automatica,
+		Autor:           naoVazio(strings.TrimSpace(req.Autor)),
+		RespondeAID:     respondeA,
+		EncaminhadaDeID: encaminhadaDe,
 	})
 	if err != nil {
 		return Entrega{}, fmt.Errorf("criar mensagem de saida: %w", err)
@@ -261,6 +286,28 @@ func (e entregadorWhatsApp) Persistir(ctx context.Context, q *store.Queries, app
 	}
 
 	return Entrega{ID: linha.ID, Status: linha.Status}, nil
+}
+
+// originalDoEncaminhamento confere que a mensagem pode ser encaminhada:
+// da mesma caixa, ja no WhatsApp (tem id do provedor), nao apagada e nao
+// evento de grupo.
+func originalDoEncaminhamento(ctx context.Context, q *store.Queries, id, caixaID int64) (store.BuscarMensagemParaEncaminharRow, error) {
+	original, err := q.BuscarMensagemParaEncaminhar(ctx, store.BuscarMensagemParaEncaminharParams{ID: id, CaixaID: caixaID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return original, recusa(http.StatusNotFound, "mensagem a encaminhar nao encontrada nesta caixa")
+	}
+	if err != nil {
+		return original, fmt.Errorf("buscar mensagem a encaminhar %d: %w", id, err)
+	}
+	switch {
+	case original.Notificacao != nil:
+		return original, recusa(http.StatusBadRequest, "evento de grupo nao e mensagem")
+	case original.ExcluidaEm.Valid:
+		return original, recusa(http.StatusConflict, "mensagem ja apagada")
+	case deref(original.ProvedorMsgID) == "":
+		return original, recusa(http.StatusConflict, "mensagem nao saiu para o whatsapp")
+	}
+	return original, nil
 }
 
 // entregadorInterno grava o blob que o gateway NAO consegue abrir -- a

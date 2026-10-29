@@ -25,8 +25,9 @@ type Provedor struct {
 	EnviadosMidia []provedor.MensagemMidia
 	StatusAtual   provedor.StatusInstancia
 
-	Editadas  []provedor.Edicao
-	Excluidas []string
+	Editadas     []provedor.Edicao
+	Excluidas    []string
+	Encaminhadas []provedor.Encaminhamento
 
 	// ProximoErro, se definido, e devolvido pela proxima chamada a Enviar
 	// ou EnviarMidia e depois limpo -- simula uma falha pontual (ex.: shadowban).
@@ -72,6 +73,23 @@ func (p *Provedor) EnviarMidia(ctx context.Context, msg provedor.MensagemMidia) 
 	}
 
 	return &provedor.ResultadoEnvio{MessageID: fmt.Sprintf("fake-midia-%s-%d", p.prefixo, len(p.EnviadosMidia))}, nil
+}
+
+var _ provedor.Encaminhador = (*Provedor)(nil)
+
+func (p *Provedor) Encaminhar(ctx context.Context, msg provedor.Encaminhamento) (*provedor.ResultadoEnvio, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.Encaminhadas = append(p.Encaminhadas, msg)
+
+	if p.ProximoErro != nil {
+		erro := p.ProximoErro
+		p.ProximoErro = nil
+		return nil, erro
+	}
+
+	return &provedor.ResultadoEnvio{MessageID: fmt.Sprintf("fake-encaminhada-%s-%d", p.prefixo, len(p.Encaminhadas))}, nil
 }
 
 func (p *Provedor) Status(ctx context.Context) (*provedor.StatusInstancia, error) {

@@ -54,6 +54,22 @@ type Edicao struct {
 	Texto         string
 }
 
+// Encaminhador e o provedor que sabe encaminhar uma mensagem que ja esta
+// no WhatsApp, sem reenviar o arquivo. Opcional: quem nao implementa manda
+// a copia (tipo, texto e midia) pelo envio normal.
+type Encaminhador interface {
+	Encaminhar(ctx context.Context, msg Encaminhamento) (*ResultadoEnvio, error)
+}
+
+// Encaminhamento e a mensagem a encaminhar. ChatOrigem e o chat onde a
+// original esta (telefone, @lid ou id do grupo) -- a z-api so acha a
+// mensagem com ele.
+type Encaminhamento struct {
+	Destinatario  string
+	ProvedorMsgID string
+	ChatOrigem    string
+}
+
 // ResultadoEnvio traz os identificadores devolvidos pelo provedor.
 // MessageID e o que deve ser gravado em mensagem.provedor_msg_id.
 type ResultadoEnvio struct {

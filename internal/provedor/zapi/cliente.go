@@ -130,6 +130,20 @@ func (c *Cliente) Editar(ctx context.Context, msg provedor.Edicao) error {
 	return err
 }
 
+var _ provedor.Encaminhador = (*Cliente)(nil)
+
+// Encaminhar usa o forward-message: a mensagem chega com a marca
+// "Encaminhada" e a midia nao trafega de novo. messagePhone e o chat da
+// original; a z-api nao acha a mensagem sem ele.
+func (c *Cliente) Encaminhar(ctx context.Context, msg provedor.Encaminhamento) (*provedor.ResultadoEnvio, error) {
+	return c.enviar(ctx, "forward-message", map[string]any{
+		"phone":        msg.Destinatario,
+		"messageId":    msg.ProvedorMsgID,
+		"messagePhone": msg.ChatOrigem,
+		"delayMessage": 3,
+	})
+}
+
 type respostaValor struct {
 	Value bool   `json:"value"`
 	Error string `json:"error"`

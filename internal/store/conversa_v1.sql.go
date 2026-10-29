@@ -308,7 +308,7 @@ WITH ultima_edicao AS (
      ORDER BY a.mensagem_id, a.id DESC
 )
 SELECT m.id, m.direcao, m.tipo, m.texto, m.midia_caminho, m.status, m.criado_em,
-       m.autor, m.editada_em, m.excluida_em, m.excluida_por, m.responde_a_id,
+       m.autor, m.editada_em, m.excluida_em, m.excluida_por, m.responde_a_id, m.encaminhada_de_id,
        m.participante_telefone, m.participante_lid, m.participante_nome,
        m.notificacao, m.notificacao_parametros,
        ed.texto AS texto_editado,
@@ -345,6 +345,7 @@ type ListarMensagensDaConversaRow struct {
 	ExcluidaEm            pgtype.Timestamp `json:"excluida_em"`
 	ExcluidaPor           *string          `json:"excluida_por"`
 	RespondeAID           *int64           `json:"responde_a_id"`
+	EncaminhadaDeID       *int64           `json:"encaminhada_de_id"`
 	ParticipanteTelefone  *string          `json:"participante_telefone"`
 	ParticipanteLid       *string          `json:"participante_lid"`
 	ParticipanteNome      *string          `json:"participante_nome"`
@@ -391,6 +392,7 @@ func (q *Queries) ListarMensagensDaConversa(ctx context.Context, arg ListarMensa
 			&i.ExcluidaEm,
 			&i.ExcluidaPor,
 			&i.RespondeAID,
+			&i.EncaminhadaDeID,
 			&i.ParticipanteTelefone,
 			&i.ParticipanteLid,
 			&i.ParticipanteNome,

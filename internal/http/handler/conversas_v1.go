@@ -320,6 +320,8 @@ type mensagemConversaResponse struct {
 	ExcluidaEm  *string            `json:"excluida_em"`
 	ExcluidaPor *string            `json:"excluida_por"`
 	RespondeA   *respondeAResponse `json:"responde_a"`
+	// Encaminhada marca a mensagem que saiu por encaminhamento (00032).
+	Encaminhada bool `json:"encaminhada"`
 	// Participante e quem falou no grupo; nulo fora de grupo e na saida.
 	Participante *participanteResponse `json:"participante"`
 	// Notificacao e o evento do grupo (GROUP_PARTICIPANT_ADD...) com os
@@ -422,6 +424,7 @@ func (h *ConversasV1) Mensagens(w http.ResponseWriter, r *http.Request) {
 			ExcluidaEm:    timestampOuNulo(l.ExcluidaEm),
 			ExcluidaPor:   l.ExcluidaPor,
 			Notificacao:   l.Notificacao,
+			Encaminhada:   l.EncaminhadaDeID != nil,
 		}
 		if l.Notificacao != nil {
 			item.NotificacaoParametros = l.NotificacaoParametros

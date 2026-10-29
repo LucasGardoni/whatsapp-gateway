@@ -17,19 +17,28 @@ WITH selecionadas AS (
     SET status = 'enviando'
     FROM selecionadas s
     WHERE m.id = s.id
-    RETURNING m.id, m.conversa_id, m.tipo, m.texto, m.midia_caminho, m.tentativas, m.dlp_isento_por, m.automatica, m.responde_a_id
+    RETURNING m.id, m.conversa_id, m.tipo, m.texto, m.midia_caminho, m.tentativas, m.dlp_isento_por, m.automatica, m.responde_a_id, m.encaminhada_de_id
 )
 -- conversa_id e corretor_id alimentam a publicacao do evento sse apos o
 -- envio (fase 7) -- sem eles o worker nao sabe pra qual corretor notificar.
 -- tipo/midia_caminho alimentam o envio de midia (fase 9).
 -- responde_a_provedor_msg_id e a mensagem citada (migration 00030); nula
 -- quando a citada ainda nao saiu, e ai o envio segue sem citar.
+-- encaminhada_* e a original do encaminhamento (migration 00032): o
+-- messageId dela e o chat onde ela esta, que a z-api pede no forward.
 SELECT a.id, a.conversa_id, a.tipo, a.texto, a.midia_caminho, a.tentativas, a.dlp_isento_por, a.automatica, lead.chat_lid, lead.telefone_e164, lead.grupo_id, c.corretor_id,
-       ref.provedor_msg_id AS responde_a_provedor_msg_id
+       ref.provedor_msg_id AS responde_a_provedor_msg_id,
+       enc.provedor_msg_id AS encaminhada_provedor_msg_id,
+       enc_lead.grupo_id AS encaminhada_grupo_id,
+       enc_lead.chat_lid AS encaminhada_chat_lid,
+       enc_lead.telefone_e164 AS encaminhada_telefone_e164
 FROM atualizadas a
 JOIN conversa c ON c.id = a.conversa_id
 JOIN lead ON lead.id = c.lead_id
-LEFT JOIN mensagem ref ON ref.id = a.responde_a_id;
+LEFT JOIN mensagem ref ON ref.id = a.responde_a_id
+LEFT JOIN mensagem enc ON enc.id = a.encaminhada_de_id
+LEFT JOIN conversa enc_conversa ON enc_conversa.id = enc.conversa_id
+LEFT JOIN lead enc_lead ON enc_lead.id = enc_conversa.lead_id;
 
 -- name: MarcarMensagemEnviada :exec
 UPDATE mensagem

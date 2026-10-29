@@ -312,6 +312,21 @@ func (w *Worker) processar(ctx context.Context, c caixa.Caixa, p provedor.Proved
 // ausente, arquivo ilegivel) e nunca vai se resolver com retentativa --
 // dessa forma o chamador sabe falhar direto em vez de reagendar.
 func (w *Worker) enviar(ctx context.Context, p provedor.Provedor, m store.SelecionarPendentesParaEnvioRow, destino, legenda string) (resultado *provedor.ResultadoEnvio, err error, valido bool) {
+	// encaminhamento (migration 00032): o provedor que sabe encaminhar
+	// recebe so o id da original; o que nao sabe manda a copia abaixo.
+	if encaminhador, ok := p.(provedor.Encaminhador); ok && m.EncaminhadaProvedorMsgID != nil {
+		origem := chatDaOriginal(m)
+		if origem == "" {
+			return nil, fmt.Errorf("mensagem %d: original do encaminhamento sem chat", m.ID), false
+		}
+		resultado, err = encaminhador.Encaminhar(ctx, provedor.Encaminhamento{
+			Destinatario:  destino,
+			ProvedorMsgID: *m.EncaminhadaProvedorMsgID,
+			ChatOrigem:    origem,
+		})
+		return resultado, err, true
+	}
+
 	if m.Tipo == "texto" {
 		if legenda == "" {
 			return nil, fmt.Errorf("mensagem %d: tipo texto sem conteudo", m.ID), false
@@ -459,6 +474,17 @@ func destinatario(m store.SelecionarPendentesParaEnvioRow) (string, error) {
 		return *m.TelefoneE164, nil
 	}
 	return "", fmt.Errorf("mensagem %d: lead sem chat_lid e sem telefone_e164", m.ID)
+}
+
+// chatDaOriginal e o chat da mensagem encaminhada, na mesma ordem de
+// preferencia de destinatario: grupo, lid, telefone.
+func chatDaOriginal(m store.SelecionarPendentesParaEnvioRow) string {
+	for _, v := range []*string{m.EncaminhadaGrupoID, m.EncaminhadaChatLid, m.EncaminhadaTelefoneE164} {
+		if v != nil && *v != "" {
+			return *v
+		}
+	}
+	return ""
 }
 
 // calcularBackoff cresce exponencialmente a partir de 30s, com teto de
