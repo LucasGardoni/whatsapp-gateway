@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -24,12 +25,12 @@ import (
 var repo = ""
 
 func main() {
-	os.Exit(rodar())
+	codigo := rodar()
+	esperarFechar(codigo)
+	os.Exit(codigo)
 }
 
 func rodar() int {
-	defer esperarEnter()
-
 	fmt.Println("======================================================================")
 	fmt.Println("  DEPLOY DO WHATSAPP GATEWAY")
 	fmt.Println("  testes > build > envio > migrations > troca > restart > health")
@@ -75,7 +76,20 @@ func rodar() int {
 	return codigo
 }
 
-func esperarEnter() {
-	fmt.Print("\nPressione Enter para fechar...")
-	_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
+// esperarFechar segura a janela. Na falha so fecha digitando ok: um Enter a
+// toa nao pode sumir com a mensagem de erro.
+func esperarFechar(codigo int) {
+	leitor := bufio.NewReader(os.Stdin)
+	if codigo == 0 || codigo == 2 {
+		fmt.Print("\nPressione Enter para fechar...")
+		_, _ = leitor.ReadString('\n')
+		return
+	}
+	for {
+		fmt.Print("\nDeploy FALHOU. Leia as mensagens acima e digite ok para fechar: ")
+		linha, err := leitor.ReadString('\n')
+		if err != nil || strings.EqualFold(strings.TrimSpace(linha), "ok") {
+			return
+		}
+	}
 }

@@ -7,14 +7,17 @@
     Roda NO SERVIDOR, como administrador. Ordem (a mesma do implantar.ps1,
     exigida desde a migration 00026): parar, migrar, trocar, subir.
 
-      1. le DATABASE_URL e PORT do proprio servico (nssm AppEnvironmentExtra).
-         As variaveis NUNCA sao regravadas: a fonte da verdade e o NSSM, nao o
-         gateway.env (que esta desatualizado e o binario nao le).
-      2. com migration pendente, faz pg_dump antes (se houver pg_dump no PATH);
-      3. para o servico, copia as migrations do pacote e roda goose up;
-      4. guarda o binario atual em anteriores\ e poe o novo no lugar;
-      5. sobe e espera GET /health. Sem resposta: volta o binario anterior e
-         sobe de novo (as migrations ficam -- sao sempre aditivas).
+      1. le binario, DATABASE_URL e PORT do registro do servico (onde o NSSM
+         guarda). As variaveis NUNCA sao regravadas: a fonte da verdade e o
+         NSSM, nao o gateway.env (desatualizado, e o binario nao le).
+      2. confere tudo ANTES de parar: nada que possa faltar depois do stop.
+      3. com migration pendente, faz pg_dump antes (se houver pg_dump no PATH);
+      4. para o servico, copia as migrations do pacote e roda goose up;
+      5. guarda o binario atual em anteriores\ e poe o novo no lugar;
+      6. sobe e espera GET /health. Sem resposta: volta o binario anterior.
+
+    Garantia: qualquer falha depois do stop sobe o servico de novo, com o
+    binario que estava antes. As migrations ficam (sao sempre aditivas).
 
     Tudo vai para logs\deploy-<data>.log.
 
@@ -38,15 +41,10 @@ New-Item -ItemType Directory -Force -Path (Join-Path $Raiz "logs") | Out-Null
 Start-Transcript -Path (Join-Path $Raiz "logs\deploy-$inicio.log") | Out-Null
 
 $nssm = Join-Path $Raiz "nssm.exe"
+$goose = Join-Path $Raiz "goose.exe"
+$migrations = Join-Path $Raiz "migrations"
+$releases = Join-Path $Raiz "releases"
 $anteriores = Join-Path $Raiz "anteriores"
-New-Item -ItemType Directory -Force -Path $anteriores | Out-Null
-
-# saida do nssm vem em UTF-16: tira os nulos e o BOM
-function Nssm-Get([string]$campo) {
-    $bruto = & $nssm get $Servico $campo
-    if ($LASTEXITCODE -ne 0) { throw "nssm get $campo falhou." }
-    return @($bruto | ForEach-Object { ($_ -replace "`0", '') -replace '^[^\x20-\x7E]+', '' } | Where-Object { $_ -ne '' })
-}
 
 # goose e pg_dump escrevem no stderr. No PowerShell 5.1, stderr redirecionado
 # vira erro e o Stop aborta; aqui vira texto, entra no log e o codigo de saida
@@ -60,8 +58,29 @@ function Rodar([string]$exe, [string[]]$argumentos) {
     return $linhas
 }
 
+function Estado { (Get-Service -Name $Servico).Status }
+
+function Parar {
+    Write-Host "Parando $Servico..."
+    # o nssm sai com erro (STOP_PENDING) quando o gateway demora a fechar; quem
+    # decide e o estado do servico, logo abaixo
+    $ErrorActionPreference = "Continue"
+    & $nssm stop $Servico 2>&1 | ForEach-Object { Write-Host ("  " + ("$_" -replace "`0", "")) }
+    $ErrorActionPreference = "Stop"
+    # o gateway leva ate ~10s fechando o outbox; o exe fica travado ate sair
+    for ($i = 0; $i -lt 40 -and (Estado) -ne 'Stopped'; $i++) { Start-Sleep -Seconds 1 }
+    if ((Estado) -ne 'Stopped') { throw "$Servico nao parou em 40s (estado: $(Estado))." }
+    Write-Host "  parado."
+}
+
+function Subir {
+    Write-Host "Subindo $Servico..."
+    $ErrorActionPreference = "Continue"
+    & $nssm start $Servico 2>&1 | ForEach-Object { Write-Host ("  " + ("$_" -replace "`0", "")) }
+}
+
 function Esperar-Health([string]$porta) {
-    for ($i = 0; $i -lt 20; $i++) {
+    for ($i = 0; $i -lt 30; $i++) {
         Start-Sleep -Seconds 1
         try {
             $r = Invoke-WebRequest -Uri "http://localhost:$porta/health" -UseBasicParsing -TimeoutSec 3
@@ -71,54 +90,57 @@ function Esperar-Health([string]$porta) {
     return $false
 }
 
-function Parar {
-    Write-Host "Parando $Servico..."
-    & $nssm stop $Servico | Out-Null
-    # o nssm devolve antes do processo sair de vez; o exe fica travado ate la
-    for ($i = 0; $i -lt 30 -and (Get-Service $Servico).Status -ne 'Stopped'; $i++) { Start-Sleep -Seconds 1 }
-}
-
-function Subir {
-    Write-Host "Subindo $Servico..."
-    & $nssm start $Servico | Out-Null
-}
+$parado = $false
+$trocado = $false
+$guardado = ""
+$exe = ""
 
 try {
-    $exe = (Nssm-Get "Application")[0]
+    # ------------------------------------------------------------ servico (registro)
+    $chave = "HKLM:\SYSTEM\CurrentControlSet\Services\$Servico\Parameters"
+    if (-not (Test-Path $chave)) { throw "Servico $Servico nao encontrado no registro ($chave)." }
+    $parametros = Get-ItemProperty -Path $chave
+    $exe = [Environment]::ExpandEnvironmentVariables([string]$parametros.Application)
+    if (-not [IO.Path]::IsPathRooted($exe) -or -not (Test-Path $exe)) { throw "Binario do servico invalido: '$exe'." }
+
     $variaveis = @{}
-    foreach ($linha in (Nssm-Get "AppEnvironmentExtra")) {
-        $i = $linha.IndexOf("=")
-        if ($i -gt 0) { $variaveis[$linha.Substring(0, $i)] = $linha.Substring($i + 1) }
+    foreach ($linha in @($parametros.AppEnvironmentExtra)) {
+        $i = "$linha".IndexOf("=")
+        if ($i -gt 0) { $variaveis["$linha".Substring(0, $i)] = "$linha".Substring($i + 1) }
     }
     $databaseUrl = $variaveis["DATABASE_URL"]
     $porta = if ($variaveis["PORT"]) { $variaveis["PORT"] } else { "8080" }
     if (-not $databaseUrl) { throw "DATABASE_URL nao esta nas variaveis do servico $Servico." }
-    Write-Host "Servico: $Servico | binario: $exe | porta: $porta"
+
+    foreach ($obrigatorio in $nssm, $goose) {
+        if (-not (Test-Path $obrigatorio)) { throw "Nao encontrado: $obrigatorio" }
+    }
+    New-Item -ItemType Directory -Force -Path $anteriores | Out-Null
+    Write-Host "Servico: $Servico ($(Estado)) | binario: $exe | porta: $porta"
 
     # ------------------------------------------------------------ voltar
     if ($Voltar) {
         $ultimo = Get-ChildItem $anteriores -Filter *.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
         if (-not $ultimo) { throw "Nada em $anteriores para voltar." }
-        Parar
-        Copy-Item $exe (Join-Path $anteriores ("revertido-$inicio.exe"))
-        Copy-Item $ultimo.FullName $exe -Force
+        $guardado = Join-Path $anteriores "revertido-$inicio.exe"
+        Copy-Item $exe $guardado
+        Parar; $parado = $true
+        Copy-Item $ultimo.FullName $exe -Force; $trocado = $true
         Subir
         if (-not (Esperar-Health $porta)) { throw "Voltou para $($ultimo.Name), mas /health nao respondeu." }
+        $parado = $false
         Write-Host "No ar com $($ultimo.Name)." -ForegroundColor Green
         return
     }
 
     # ------------------------------------------------------------ pacote
-    $releases = Join-Path $Raiz "releases"
     $dir = if ($Pacote) { Join-Path $releases $Pacote } else {
         (Get-ChildItem $releases -Directory | Sort-Object Name -Descending | Select-Object -First 1).FullName
     }
-    if (-not $dir -or -not (Test-Path (Join-Path $dir "gateway.exe"))) { throw "Pacote sem gateway.exe: $dir" }
+    $novo = Join-Path $dir "gateway.exe"
+    if (-not $dir -or -not (Test-Path $novo)) { throw "Pacote sem gateway.exe: $dir" }
     Write-Host "Pacote: $dir"
-    if (Test-Path (Join-Path $dir "versao.txt")) { Get-Content (Join-Path $dir "versao.txt") | Write-Host }
-
-    $goose = Join-Path $Raiz "goose.exe"
-    $migrations = Join-Path $Raiz "migrations"
+    if (Test-Path (Join-Path $dir "versao.txt")) { Get-Content (Join-Path $dir "versao.txt") | ForEach-Object { Write-Host "  $_" } }
 
     # ------------------------------------------------------------ pendentes + backup
     Write-Host "goose status..."
@@ -138,45 +160,62 @@ try {
         }
     }
 
-    # ------------------------------------------------------------ parar + migrar
-    Parar
-    try {
-        Copy-Item (Join-Path $dir "migrations\*.sql") $migrations -Force
-        if ($pendentes.Count -gt 0) {
-            Write-Host "goose up..."
-            Rodar $goose @("-dir", $migrations, "postgres", $databaseUrl, "up") | Out-Null
-        }
-    } catch {
-        # binario antigo de volta no ar: migration que falhou roda em transacao
-        Write-Warning "Falha ao migrar; subindo o binario que ja estava."
-        Subir
-        throw
+    # copia do binario atual ANTES de parar: se faltar disco ou permissao, falha com o servico no ar
+    $guardado = Join-Path $anteriores "gateway-antes-de-$inicio.exe"
+    Copy-Item $exe $guardado
+
+    # ------------------------------------------------------------ parar + migrar + trocar
+    Parar; $parado = $true
+
+    Copy-Item (Join-Path $dir "migrations\*.sql") $migrations -Force
+    if ($pendentes.Count -gt 0) {
+        Write-Host "goose up..."
+        Rodar $goose @("-dir", $migrations, "postgres", $databaseUrl, "up") | Out-Null
     }
 
-    # ------------------------------------------------------------ trocar
-    $guardado = Join-Path $anteriores ("gateway-antes-de-$inicio.exe")
-    Copy-Item $exe $guardado
-    Copy-Item (Join-Path $dir "gateway.exe") $exe -Force
+    Copy-Item $novo $exe -Force; $trocado = $true
+    Write-Host "Binario trocado."
     Subir
 
-    if (Esperar-Health $porta) {
-        Write-Host "Gateway no ar com o pacote $(Split-Path $dir -Leaf)." -ForegroundColor Green
-    } else {
-        Write-Warning "/health nao respondeu. Ultimas linhas do log:"
-        Get-Content (Join-Path $Raiz "logs\gateway.log") -Tail 30 -ErrorAction SilentlyContinue
-        Write-Warning "Voltando o binario anterior..."
-        Parar
-        Copy-Item $guardado $exe -Force
-        Subir
-        $voltou = Esperar-Health $porta
-        throw ("Deploy falhou; binario anterior " + $(if ($voltou) { "no ar." } else { "TAMBEM nao respondeu -- ver logs\gateway.log." }))
+    if (-not (Esperar-Health $porta)) {
+        Write-Warning "/health nao respondeu em 30s. Ultimas linhas do log:"
+        Get-Content (Join-Path $Raiz "logs\gateway.log") -Tail 30 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $_" }
+        throw "Binario novo nao respondeu ao /health."
     }
+    $parado = $false
+    Write-Host "Gateway no ar com o pacote $(Split-Path $dir -Leaf)." -ForegroundColor Green
 
     # ------------------------------------------------------------ limpeza
     Get-ChildItem $anteriores -Filter *.exe | Sort-Object LastWriteTime -Descending |
         Select-Object -Skip $GuardarAnteriores | Remove-Item -Force
     Get-ChildItem $releases -Directory | Sort-Object Name -Descending |
         Select-Object -Skip $GuardarAnteriores | Remove-Item -Recurse -Force
-} finally {
+} catch {
+    $erro = $_
+    Write-Host ""
+    Write-Host "ERRO: $($erro.Exception.Message)" -ForegroundColor Red
+
+    # o servico nunca fica parado por causa do deploy
+    if ($parado) {
+        try {
+            if ((Estado) -ne 'Stopped') { Parar }
+            if ($trocado -and $guardado -and (Test-Path $guardado)) {
+                Write-Warning "Voltando o binario anterior..."
+                Copy-Item $guardado $exe -Force
+            }
+            Subir
+            if (Esperar-Health $porta) {
+                Write-Host "Servico de volta no ar com o binario anterior." -ForegroundColor Yellow
+            } else {
+                Write-Host "ATENCAO: o servico NAO respondeu nem com o binario anterior. Ver logs\gateway.log." -ForegroundColor Red
+            }
+        } catch {
+            Write-Host "ATENCAO: falhou ao religar o servico: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "Suba a mao: cd $Raiz ; .\nssm.exe start $Servico" -ForegroundColor Red
+        }
+    }
     Stop-Transcript | Out-Null
+    exit 1
 }
+
+Stop-Transcript | Out-Null
