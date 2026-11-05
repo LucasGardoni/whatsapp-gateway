@@ -192,6 +192,7 @@ type Mensagem struct {
 	Notificacao           *string          `json:"notificacao"`
 	NotificacaoParametros []string         `json:"notificacao_parametros"`
 	EncaminhadaDeID       *int64           `json:"encaminhada_de_id"`
+	MidiaRecuperada       *string          `json:"midia_recuperada"`
 }
 
 type MensagemAlteracao struct {
@@ -226,6 +227,15 @@ type MidiaBiblioteca struct {
 	Caminho   string  `json:"caminho"`
 	Categoria *string `json:"categoria"`
 	Ativo     bool    `json:"ativo"`
+}
+
+type MidiaPendente struct {
+	MensagemID       int64            `json:"mensagem_id"`
+	Url              string           `json:"url"`
+	Tentativas       int32            `json:"tentativas"`
+	ProximaTentativa pgtype.Timestamp `json:"proxima_tentativa"`
+	UltimoErro       *string          `json:"ultimo_erro"`
+	CriadoEm         pgtype.Timestamp `json:"criado_em"`
 }
 
 type Parametro struct {

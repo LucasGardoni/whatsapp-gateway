@@ -211,6 +211,7 @@ SELECT a.id, a.acao, a.texto, a.autor, a.criado_em
   JOIN mensagem m ON m.id = a.mensagem_id
  WHERE a.mensagem_id = $1
    AND m.conversa_id = $2
+   AND a.acao IN ('edicao', 'exclusao')
  ORDER BY a.id
 `
 

@@ -28,6 +28,7 @@ import (
 	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/observabilidade"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/outbox"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/recuperamidia"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/retencao"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/saude"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/sse"
@@ -122,6 +123,7 @@ func run() error {
 	baixador := midia.NovoBaixador(cfg.MidiaDir)
 	webhookZAPI := handler.NovoWebhookZAPI(pool, baixador)
 	webhookZAPI.EventosWhatsApp = eventosWhatsApp
+	recuperadorMidia := recuperamidia.Novo(pool, baixador, recuperamidia.Config{EventosWhatsApp: eventosWhatsApp})
 
 	// o disparo e do CRM de corretores, que so conhece a caixa semente.
 	identidadeCliente := identidade.NovoCliente(cfg.ZAPIInstanceID, cfg.ZAPIInstanceToken, cfg.ZAPIClientToken)
@@ -232,6 +234,12 @@ func run() error {
 	// gateway, entao ele nao entra no select abaixo.
 	go func() {
 		_ = coletor.Executar(ctx)
+	}()
+
+	// como o amostrador: passada que falha so loga, nao derruba o gateway.
+	go func() {
+		slog.Info("recuperador de midia iniciado")
+		_ = recuperadorMidia.Executar(ctx)
 	}()
 
 	retencaoErr := make(chan error, 1)

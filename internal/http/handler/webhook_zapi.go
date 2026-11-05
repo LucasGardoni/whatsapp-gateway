@@ -33,8 +33,14 @@ import (
 const tamanhoMaximoPayload = 5 << 20 // 5MB
 
 // timeoutProcessamento bound o processamento assincrono de uma mensagem
-// recebida (matcher + download de midia + escrita no banco).
+// recebida (matcher + escrita no banco). Conta depois do download da midia:
+// quando o download dividia o mesmo prazo, um servidor de midia lento
+// estourava o tempo e a mensagem nem chegava a ser gravada.
 const timeoutProcessamento = 30 * time.Second
+
+// timeoutDownloadNaChegada e o quanto o webhook espera a midia. O que nao
+// baixar nesse tempo vai para midia_pendente e o recuperador tenta depois.
+const timeoutDownloadNaChegada = 25 * time.Second
 
 // origemProvedorZAPI e a procedencia das mensagens de ENTRADA (barramento,
 // fase 2). Casa com mensagem.provedor, que ja grava 'zapi' na mesma linha
@@ -102,9 +108,6 @@ func caixaDoWebhook(w http.ResponseWriter, r *http.Request) (caixa.Caixa, bool) 
 }
 
 func (h *WebhookZAPI) processarMensagemRecebida(cx caixa.Caixa, payloadBrutoID int64, corpo []byte) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeoutProcessamento)
-	defer cancel()
-
 	var payload zapi.PayloadRecebido
 	if err := json.Unmarshal(corpo, &payload); err != nil {
 		slog.Error("webhook zapi: payload invalido", "payload_bruto_id", payloadBrutoID, "erro", err)
@@ -112,7 +115,7 @@ func (h *WebhookZAPI) processarMensagemRecebida(cx caixa.Caixa, payloadBrutoID i
 	}
 
 	if payload.IsGroup && !payload.IsNewsletter {
-		h.processarGrupo(ctx, cx, payloadBrutoID, corpo, payload)
+		h.processarGrupo(cx, payloadBrutoID, corpo, payload)
 		return
 	}
 	if payload.FromMe || payload.IsGroup || payload.IsNewsletter || payload.IsStatusReply {
@@ -131,19 +134,10 @@ func (h *WebhookZAPI) processarMensagemRecebida(cx caixa.Caixa, payloadBrutoID i
 	}
 
 	tipo, texto, midiaURL, downloadErro := classificarConteudo(payload)
+	midiaCaminho, pendente := h.baixarNaChegada(payload.MessageID, midiaURL, downloadErro)
 
-	var midiaCaminho string
-	switch {
-	case downloadErro != "":
-		slog.Warn("webhook zapi: midia indisponivel (downloadError da z-api)", "mensagem_id", payload.MessageID, "erro", downloadErro)
-	case midiaURL != "":
-		caminho, err := h.baixador.Baixar(ctx, midiaURL, payload.MessageID)
-		if err != nil {
-			slog.Warn("webhook zapi: falha ao baixar midia, tratando como indisponivel", "mensagem_id", payload.MessageID, "erro", err)
-		} else {
-			midiaCaminho = caminho
-		}
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutProcessamento)
+	defer cancel()
 
 	tx, err := h.pool.Begin(ctx)
 	if err != nil {
@@ -251,6 +245,10 @@ func (h *WebhookZAPI) processarMensagemRecebida(cx caixa.Caixa, payloadBrutoID i
 		slog.Error("webhook zapi: inserir mensagem", "erro", err)
 		return
 	}
+	if err := pendente.registrar(ctx, queries, mensagemID); err != nil {
+		slog.Error("webhook zapi: registrar midia pendente", "mensagem_id", mensagemID, "erro", err)
+		return
+	}
 
 	// citacao: liga a mensagem citada, se ela estiver no banco desta caixa.
 	if ref := idCitado(payload); ref != "" {
@@ -311,6 +309,47 @@ func (h *WebhookZAPI) processarMensagemRecebida(cx caixa.Caixa, payloadBrutoID i
 		slog.Error("webhook zapi: commit", "erro", err)
 		return
 	}
+}
+
+// midiaPendente e o download que falhou na chegada; zero = nada pendente.
+type midiaPendente struct {
+	url  string
+	erro string
+}
+
+// registrar poe a midia na fila do recuperador, na transacao da mensagem.
+func (p midiaPendente) registrar(ctx context.Context, q *store.Queries, mensagemID int64) error {
+	if p.url == "" {
+		return nil
+	}
+	return q.InserirMidiaPendente(ctx, store.InserirMidiaPendenteParams{
+		MensagemID: mensagemID,
+		Url:        p.url,
+		UltimoErro: naoVazio(p.erro),
+	})
+}
+
+// baixarNaChegada tenta a midia com prazo proprio. Falha de rede nao perde a
+// midia: volta como pendente para o recuperador. downloadError da z-api e
+// definitivo -- ela mesma nao conseguiu o arquivo.
+func (h *WebhookZAPI) baixarNaChegada(mensagemID, midiaURL, downloadErro string) (string, midiaPendente) {
+	switch {
+	case downloadErro != "":
+		slog.Warn("webhook zapi: midia indisponivel (downloadError da z-api)", "mensagem_id", mensagemID, "erro", downloadErro)
+		return "", midiaPendente{}
+	case midiaURL == "":
+		return "", midiaPendente{}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutDownloadNaChegada)
+	defer cancel()
+
+	caminho, err := h.baixador.Baixar(ctx, midiaURL, mensagemID)
+	if err != nil {
+		slog.Warn("webhook zapi: falha ao baixar midia, vai para o recuperador", "mensagem_id", mensagemID, "erro", err)
+		return "", midiaPendente{url: midiaURL, erro: err.Error()}
+	}
+	return caminho, midiaPendente{}
 }
 
 // chaveIdentidade e o telefone normalizado, como na abertura de conversa;

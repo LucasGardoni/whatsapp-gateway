@@ -82,7 +82,7 @@ func (b *Baixador) Baixar(ctx context.Context, urlBruta, nomeBase string) (strin
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("baixar midia %s: status %d", nomeBase, resp.StatusCode)
+		return "", fmt.Errorf("baixar midia %s: %w", nomeBase, ErroStatus{Status: resp.StatusCode})
 	}
 
 	if err := os.MkdirAll(b.diretorio, 0o755); err != nil {
@@ -95,11 +95,29 @@ func (b *Baixador) Baixar(ctx context.Context, urlBruta, nomeBase string) (strin
 	if err != nil {
 		return "", fmt.Errorf("baixar midia %s: criar arquivo: %w", nomeBase, err)
 	}
-	defer arquivo.Close()
 
 	if _, err := io.Copy(arquivo, resp.Body); err != nil {
+		// arquivo pela metade nao pode ficar no disco: a proxima tentativa
+		// grava por cima, mas se ela nunca vier a tela serviria a imagem cortada.
+		arquivo.Close()
+		_ = os.Remove(caminho)
 		return "", fmt.Errorf("baixar midia %s: gravar arquivo: %w", nomeBase, err)
+	}
+	if err := arquivo.Close(); err != nil {
+		_ = os.Remove(caminho)
+		return "", fmt.Errorf("baixar midia %s: fechar arquivo: %w", nomeBase, err)
 	}
 
 	return caminho, nil
+}
+
+// ErroStatus e a resposta nao-200 do servidor de midia.
+type ErroStatus struct{ Status int }
+
+func (e ErroStatus) Error() string { return fmt.Sprintf("status %d", e.Status) }
+
+// Definitivo diz que tentar de novo nao adianta: o link temporario da z-api
+// expirou ou nunca existiu. 408/429 e 5xx sao passageiros.
+func (e ErroStatus) Definitivo() bool {
+	return e.Status >= 400 && e.Status < 500 && e.Status != http.StatusRequestTimeout && e.Status != http.StatusTooManyRequests
 }

@@ -42,7 +42,7 @@ RETURNING *;
 -- name: BuscarMensagemParaEncaminhar :one
 -- POST /v1/mensagens com encaminha_de: a original tem de ser da mesma caixa
 -- (o forward-message da z-api so acha mensagem da propria instancia).
-SELECT m.id, m.tipo, m.texto, m.midia_caminho, m.provedor_msg_id, m.excluida_em, m.notificacao
+SELECT m.id, m.tipo, m.texto, COALESCE(m.midia_caminho, m.midia_recuperada) AS midia_caminho, m.provedor_msg_id, m.excluida_em, m.notificacao
   FROM mensagem m
   JOIN conversa c ON c.id = m.conversa_id
  WHERE m.id = sqlc.arg(id)

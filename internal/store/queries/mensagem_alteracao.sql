@@ -72,6 +72,7 @@ SELECT a.id, a.acao, a.texto, a.autor, a.criado_em
   JOIN mensagem m ON m.id = a.mensagem_id
  WHERE a.mensagem_id = sqlc.arg(mensagem_id)
    AND m.conversa_id = sqlc.arg(conversa_id)
+   AND a.acao IN ('edicao', 'exclusao')
  ORDER BY a.id;
 
 -- name: BuscarMensagemParaCitar :one

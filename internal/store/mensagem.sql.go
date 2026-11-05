@@ -30,7 +30,7 @@ func (q *Queries) BuscarConversaPorID(ctx context.Context, id int64) (Conversa, 
 }
 
 const buscarMensagemParaEncaminhar = `-- name: BuscarMensagemParaEncaminhar :one
-SELECT m.id, m.tipo, m.texto, m.midia_caminho, m.provedor_msg_id, m.excluida_em, m.notificacao
+SELECT m.id, m.tipo, m.texto, COALESCE(m.midia_caminho, m.midia_recuperada) AS midia_caminho, m.provedor_msg_id, m.excluida_em, m.notificacao
   FROM mensagem m
   JOIN conversa c ON c.id = m.conversa_id
  WHERE m.id = $1
@@ -85,7 +85,7 @@ VALUES (
     $9,
     $10
 )
-RETURNING id, conversa_id, direcao, tipo, texto, midia_caminho, provedor, provedor_msg_id, zaap_id, status, tentativas, tentar_em, payload_bruto, criado_em, hash_anterior, hash, ultimo_erro, aplicacao_id, dlp_isento_por, automatica, autor, responde_a_id, editada_em, excluida_em, excluida_por, participante_telefone, participante_lid, participante_nome, notificacao, notificacao_parametros, encaminhada_de_id
+RETURNING id, conversa_id, direcao, tipo, texto, midia_caminho, provedor, provedor_msg_id, zaap_id, status, tentativas, tentar_em, payload_bruto, criado_em, hash_anterior, hash, ultimo_erro, aplicacao_id, dlp_isento_por, automatica, autor, responde_a_id, editada_em, excluida_em, excluida_por, participante_telefone, participante_lid, participante_nome, notificacao, notificacao_parametros, encaminhada_de_id, midia_recuperada
 `
 
 type CriarMensagemSaidaParams struct {
@@ -167,6 +167,7 @@ func (q *Queries) CriarMensagemSaida(ctx context.Context, arg CriarMensagemSaida
 		&i.Notificacao,
 		&i.NotificacaoParametros,
 		&i.EncaminhadaDeID,
+		&i.MidiaRecuperada,
 	)
 	return i, err
 }

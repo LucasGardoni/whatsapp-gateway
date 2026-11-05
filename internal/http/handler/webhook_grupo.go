@@ -43,7 +43,7 @@ const (
 //
 // fromMe so e descartado em mensagem comum: o envio pela aplicacao ja esta no
 // banco. Evento do grupo com fromMe (o proprio numero saiu) precisa entrar.
-func (h *WebhookZAPI) processarGrupo(ctx context.Context, cx caixa.Caixa, payloadBrutoID int64, corpo []byte, payload zapi.PayloadRecebido) {
+func (h *WebhookZAPI) processarGrupo(cx caixa.Caixa, payloadBrutoID int64, corpo []byte, payload zapi.PayloadRecebido) {
 	grupoID := strings.TrimSpace(payload.Phone)
 	if grupoID == "" {
 		slog.Warn("webhook zapi: grupo sem id, ignorando", "payload_bruto_id", payloadBrutoID)
@@ -68,23 +68,17 @@ func (h *WebhookZAPI) processarGrupo(ctx context.Context, cx caixa.Caixa, payloa
 	efeito := efeitoDoEvento(payload)
 
 	var tipo, texto, midiaCaminho string
+	var pendente midiaPendente
 	if evento {
 		tipo = "outro"
 	} else {
 		var midiaURL, downloadErro string
 		tipo, texto, midiaURL, downloadErro = classificarConteudo(payload)
-		switch {
-		case downloadErro != "":
-			slog.Warn("webhook zapi: midia de grupo indisponivel", "mensagem_id", payload.MessageID, "erro", downloadErro)
-		case midiaURL != "":
-			caminho, err := h.baixador.Baixar(ctx, midiaURL, payload.MessageID)
-			if err != nil {
-				slog.Warn("webhook zapi: falha ao baixar midia de grupo", "mensagem_id", payload.MessageID, "erro", err)
-			} else {
-				midiaCaminho = caminho
-			}
-		}
+		midiaCaminho, pendente = h.baixarNaChegada(payload.MessageID, midiaURL, downloadErro)
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutProcessamento)
+	defer cancel()
 
 	tx, err := h.pool.Begin(ctx)
 	if err != nil {
@@ -149,6 +143,10 @@ func (h *WebhookZAPI) processarGrupo(ctx context.Context, cx caixa.Caixa, payloa
 	}
 	if err != nil {
 		slog.Error("webhook zapi: inserir mensagem de grupo", "erro", err)
+		return
+	}
+	if err := pendente.registrar(ctx, queries, mensagemID); err != nil {
+		slog.Error("webhook zapi: grupo: registrar midia pendente", "mensagem_id", mensagemID, "erro", err)
 		return
 	}
 

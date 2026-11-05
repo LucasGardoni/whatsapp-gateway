@@ -129,7 +129,7 @@ WITH ultima_edicao AS (
        AND a.acao = 'edicao'
      ORDER BY a.mensagem_id, a.id DESC
 )
-SELECT m.id, m.direcao, m.tipo, m.texto, m.midia_caminho, m.status, m.criado_em,
+SELECT m.id, m.direcao, m.tipo, m.texto, COALESCE(m.midia_caminho, m.midia_recuperada) AS midia_caminho, m.status, m.criado_em,
        m.autor, m.editada_em, m.excluida_em, m.excluida_por, m.responde_a_id, m.encaminhada_de_id,
        m.participante_telefone, m.participante_lid, m.participante_nome,
        m.notificacao, m.notificacao_parametros,
@@ -174,7 +174,7 @@ UPDATE lead SET nome = sqlc.arg(nome) WHERE id = sqlc.arg(id) AND (nome IS NULL 
 -- name: BuscarMidiaDaMensagem :one
 -- G10: o arquivo de uma mensagem, so se ela for da conversa pedida -- a
 -- aplicacao autoriza a conversa e o gateway garante que a mensagem e dela.
-SELECT tipo, texto, midia_caminho
+SELECT tipo, texto, COALESCE(midia_caminho, midia_recuperada) AS midia_caminho
   FROM mensagem
  WHERE id = sqlc.arg(mensagem_id)
    AND conversa_id = sqlc.arg(conversa_id);
