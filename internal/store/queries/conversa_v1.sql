@@ -136,7 +136,8 @@ SELECT m.id, m.direcao, m.tipo, m.texto, COALESCE(m.midia_caminho, m.midia_recup
        ed.texto AS texto_editado,
        ref.direcao AS responde_a_direcao,
        ref.tipo AS responde_a_tipo,
-       ref.texto AS responde_a_texto
+       ref.texto AS responde_a_texto,
+       CASE WHEN m.tipo = 'outro' THEN m.payload_bruto -> 'contact' END AS contato_bruto
   FROM mensagem m
   LEFT JOIN ultima_edicao ed ON ed.mensagem_id = m.id
   LEFT JOIN mensagem ref ON ref.id = m.responde_a_id

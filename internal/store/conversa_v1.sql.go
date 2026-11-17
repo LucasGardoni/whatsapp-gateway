@@ -314,7 +314,8 @@ SELECT m.id, m.direcao, m.tipo, m.texto, COALESCE(m.midia_caminho, m.midia_recup
        ed.texto AS texto_editado,
        ref.direcao AS responde_a_direcao,
        ref.tipo AS responde_a_tipo,
-       ref.texto AS responde_a_texto
+       ref.texto AS responde_a_texto,
+       CASE WHEN m.tipo = 'outro' THEN m.payload_bruto -> 'contact' END AS contato_bruto
   FROM mensagem m
   LEFT JOIN ultima_edicao ed ON ed.mensagem_id = m.id
   LEFT JOIN mensagem ref ON ref.id = m.responde_a_id
@@ -355,6 +356,7 @@ type ListarMensagensDaConversaRow struct {
 	RespondeADirecao      *string          `json:"responde_a_direcao"`
 	RespondeATipo         *string          `json:"responde_a_tipo"`
 	RespondeATexto        *string          `json:"responde_a_texto"`
+	ContatoBruto          []byte           `json:"contato_bruto"`
 }
 
 // Mesmo contrato do historico do canal interno (secao G2/G3 do plano):
@@ -402,6 +404,7 @@ func (q *Queries) ListarMensagensDaConversa(ctx context.Context, arg ListarMensa
 			&i.RespondeADirecao,
 			&i.RespondeATipo,
 			&i.RespondeATexto,
+			&i.ContatoBruto,
 		); err != nil {
 			return nil, err
 		}

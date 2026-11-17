@@ -25,9 +25,28 @@ import (
 	"github.com/LucasGardoni/whatsapp-gateway/internal/caixa"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/http/middleware"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/identidade"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/mensagem"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor/zapi"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/store"
 )
+
+// contatoDoPayloadBruto remonta o texto do cartao (mensagem.FormatarContato)
+// a partir do objeto `contact` do webhook; false se nao der nome nem telefone.
+func contatoDoPayloadBruto(bruto []byte) (string, bool) {
+	var c zapi.ConteudoContato
+	if err := json.Unmarshal(bruto, &c); err != nil {
+		return "", false
+	}
+	telefones := c.Phones
+	if len(telefones) == 0 {
+		telefones = mensagem.TelefonesDoVCard(c.VCard)
+	}
+	if strings.TrimSpace(c.DisplayName) == "" && len(telefones) == 0 {
+		return "", false
+	}
+	return mensagem.FormatarContato(mensagem.Contato{Nome: c.DisplayName, Telefones: telefones}), true
+}
 
 // ConversasV1 atende G2/G3/G4/G6 do barramento (docs/PLANO_MULTICAIXA_E_CONVERSAS.md):
 // GET /v1/conversas, GET /v1/conversas/{id}/mensagens, POST /v1/conversas e
@@ -428,6 +447,16 @@ func (h *ConversasV1) Mensagens(w http.ResponseWriter, r *http.Request) {
 		}
 		if l.Notificacao != nil {
 			item.NotificacaoParametros = l.NotificacaoParametros
+		}
+		// Contato recebido antes do tipo existir ficou como 'outro', sem texto.
+		// O hash da cadeia cobre tipo e texto, entao a linha nao e regravada:
+		// o cartao e remontado do payload_bruto so na resposta.
+		if l.Tipo == "outro" && len(l.ContatoBruto) > 0 {
+			if texto, ok := contatoDoPayloadBruto(l.ContatoBruto); ok {
+				item.Tipo = mensagem.TipoContato
+				item.Texto = &texto
+				item.TextoOriginal = &texto
+			}
 		}
 		if l.ParticipanteTelefone != nil || l.ParticipanteLid != nil || l.ParticipanteNome != nil {
 			item.Participante = &participanteResponse{Telefone: l.ParticipanteTelefone, Lid: l.ParticipanteLid, Nome: l.ParticipanteNome}
