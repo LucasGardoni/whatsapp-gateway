@@ -123,12 +123,20 @@ func (m WhatsApp) Validar() error {
 		if m.MidiaCaminho != "" {
 			return invalido("midia_caminho nao se aplica ao tipo texto")
 		}
+	case m.Tipo == TipoContato:
+		if m.MidiaCaminho != "" {
+			return invalido("midia_caminho nao se aplica ao tipo contato")
+		}
+		c := LerContato(m.Texto)
+		if c.Nome == "" || len(c.Telefones) == 0 {
+			return invalido("contato precisa do nome na primeira linha e de um telefone na seguinte")
+		}
 	case tiposMidiaAceitos[m.Tipo]:
 		if m.MidiaCaminho == "" {
 			return invalido("midia_caminho e obrigatorio para tipo %s", m.Tipo)
 		}
 	default:
-		return invalido("tipo invalido: use texto, imagem, audio, video, documento ou figurinha")
+		return invalido("tipo invalido: use texto, imagem, audio, video, documento, figurinha ou contato")
 	}
 	return nil
 }

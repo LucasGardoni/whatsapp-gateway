@@ -218,6 +218,19 @@ func (c *Cliente) EnviarMidia(ctx context.Context, msg provedor.MensagemMidia) (
 	return c.enviar(ctx, caminho, corpo)
 }
 
+var _ provedor.EnviadorContato = (*Cliente)(nil)
+
+// EnviarContato usa o send-contact: chega como cartao, com os botoes de
+// conversar e salvar do WhatsApp.
+func (c *Cliente) EnviarContato(ctx context.Context, msg provedor.MensagemContato) (*provedor.ResultadoEnvio, error) {
+	return c.enviar(ctx, "send-contact", citando(map[string]any{
+		"phone":        msg.Destinatario,
+		"contactName":  msg.Nome,
+		"contactPhone": msg.Telefone,
+		"delayMessage": 3,
+	}, msg.RespondeA))
+}
+
 // enviar concentra o padrao comum a todo endpoint de envio da z-api:
 // monta o corpo, faz o post e classifica o erro (retentavel/shadowban).
 func (c *Cliente) enviar(ctx context.Context, caminho string, corpo map[string]any) (*provedor.ResultadoEnvio, error) {

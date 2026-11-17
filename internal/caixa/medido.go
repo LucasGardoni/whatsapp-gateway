@@ -64,6 +64,21 @@ func (p provedorMedido) Encaminhar(ctx context.Context, msg provedor.Encaminhame
 	return r, err
 }
 
+var _ provedor.EnviadorContato = provedorMedido{}
+
+// EnviarContato repassa ao provedor embrulhado; quem nao manda cartao
+// recebe nome e telefone como texto.
+func (p provedorMedido) EnviarContato(ctx context.Context, msg provedor.MensagemContato) (*provedor.ResultadoEnvio, error) {
+	enviador, ok := p.Provedor.(provedor.EnviadorContato)
+	if !ok {
+		return p.Enviar(ctx, provedor.MensagemTexto{Destinatario: msg.Destinatario, Texto: msg.Nome + "\n+" + msg.Telefone, RespondeA: msg.RespondeA})
+	}
+	inicio := time.Now()
+	r, err := enviador.EnviarContato(ctx, msg)
+	p.observador.ChamadaProvedor(p.caixa, "enviar_contato", time.Since(inicio), err)
+	return r, err
+}
+
 var errNaoEncaminha = naoRetentavel{errors.New("provedor da caixa nao encaminha mensagem")}
 
 // naoRetentavel faz o outbox falhar direto, sem reagendar.

@@ -22,6 +22,7 @@ import (
 	"github.com/LucasGardoni/whatsapp-gateway/internal/http/middleware"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/identidade"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/matcher"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/mensagem"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor/zapi"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/sse"
@@ -388,6 +389,12 @@ func classificarConteudo(p zapi.PayloadRecebido) (tipo, texto, midiaURL, downloa
 		return "documento", p.Document.FileName, p.Document.URL, ""
 	case p.Sticker != nil:
 		return "figurinha", "", p.Sticker.URL, ""
+	case p.Contact != nil:
+		telefones := p.Contact.Phones
+		if len(telefones) == 0 {
+			telefones = mensagem.TelefonesDoVCard(p.Contact.VCard)
+		}
+		return mensagem.TipoContato, mensagem.FormatarContato(mensagem.Contato{Nome: p.Contact.DisplayName, Telefones: telefones}), "", ""
 	default:
 		return "outro", "", "", ""
 	}

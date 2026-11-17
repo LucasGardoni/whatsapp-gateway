@@ -17,6 +17,7 @@ import (
 	"github.com/LucasGardoni/whatsapp-gateway/internal/caixa"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/dlp"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/eventos"
+	"github.com/LucasGardoni/whatsapp-gateway/internal/mensagem"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/midia"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/provedor"
 	"github.com/LucasGardoni/whatsapp-gateway/internal/sse"
@@ -324,6 +325,21 @@ func (w *Worker) enviar(ctx context.Context, p provedor.Provedor, m store.Seleci
 			ProvedorMsgID: *m.EncaminhadaProvedorMsgID,
 			ChatOrigem:    origem,
 		})
+		return resultado, err, true
+	}
+
+	if m.Tipo == mensagem.TipoContato {
+		contato := mensagem.LerContato(legenda)
+		if contato.Nome == "" || len(contato.Telefones) == 0 {
+			return nil, fmt.Errorf("mensagem %d: contato sem nome ou telefone", m.ID), false
+		}
+		// a z-api manda um telefone por cartao: o primeiro e o principal.
+		envio := provedor.MensagemContato{Destinatario: destino, Nome: contato.Nome, Telefone: contato.Telefones[0], RespondeA: deref(m.RespondeAProvedorMsgID)}
+		if enviador, ok := p.(provedor.EnviadorContato); ok {
+			resultado, err = enviador.EnviarContato(ctx, envio)
+			return resultado, err, true
+		}
+		resultado, err = p.Enviar(ctx, provedor.MensagemTexto{Destinatario: destino, Texto: envio.Nome + "\n+" + envio.Telefone, RespondeA: envio.RespondeA})
 		return resultado, err, true
 	}
 

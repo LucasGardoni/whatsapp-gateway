@@ -29,6 +29,7 @@ type PayloadRecebido struct {
 	Video    *ConteudoVideo     `json:"video,omitempty"`
 	Document *ConteudoDocumento `json:"document,omitempty"`
 	Sticker  *ConteudoFigurinha `json:"sticker,omitempty"`
+	Contact  *ConteudoContato   `json:"contact,omitempty"`
 
 	// ExternalAdReply so vem preenchido quando a conversa nasce de um
 	// anuncio click-to-whatsapp (secao 4.5) -- atribuicao de campanha de
@@ -90,6 +91,14 @@ type ConteudoDocumento struct {
 type ConteudoFigurinha struct {
 	URL      string `json:"stickerUrl"`
 	MimeType string `json:"mimeType"`
+}
+
+// ConteudoContato e o cartao (vCard) recebido. phones nem sempre vem: o
+// vCard bruto e o fallback.
+type ConteudoContato struct {
+	DisplayName string   `json:"displayName"`
+	VCard       string   `json:"vCard"`
+	Phones      []string `json:"phones"`
 }
 
 // PayloadStatusMensagem e o corpo do webhook on-message-status. IDs vem em

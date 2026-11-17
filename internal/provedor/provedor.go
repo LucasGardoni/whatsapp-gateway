@@ -70,6 +70,20 @@ type Encaminhamento struct {
 	ChatOrigem    string
 }
 
+// EnviadorContato e o provedor que manda cartao de contato (vCard).
+// Opcional: quem nao implementa recebe nome e telefone como texto.
+type EnviadorContato interface {
+	EnviarContato(ctx context.Context, msg MensagemContato) (*ResultadoEnvio, error)
+}
+
+// MensagemContato e o cartao a enviar. Telefone so com digitos, com DDI.
+type MensagemContato struct {
+	Destinatario string
+	Nome         string
+	Telefone     string
+	RespondeA    string
+}
+
 // ResultadoEnvio traz os identificadores devolvidos pelo provedor.
 // MessageID e o que deve ser gravado em mensagem.provedor_msg_id.
 type ResultadoEnvio struct {
