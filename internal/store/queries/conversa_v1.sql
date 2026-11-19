@@ -188,3 +188,24 @@ SELECT leitor, ultima_lida_id, atualizado_em
    AND conversa_id = sqlc.arg(conversa_id)
    AND leitor <> ''
  ORDER BY leitor;
+
+-- name: BuscarTextoNasConversas :many
+-- Busca por palavra no texto das mensagens: a ultima mensagem que casa em
+-- cada conversa, mais recente primeiro. Sem acento e sem caixa pelo mesmo
+-- translate(lower()) dos dois lados -- sem depender de unaccent. O termo ja
+-- chega com % _ \ escapados. Mensagem apagada fica de fora: a tela nao
+-- mostra o texto dela. Sem indice de texto: varre as mensagens da caixa.
+SELECT achada.conversa_id, achada.id, achada.direcao, achada.tipo, achada.texto, achada.criado_em
+  FROM (
+        SELECT DISTINCT ON (m.conversa_id) m.conversa_id, m.id, m.direcao, m.tipo, m.texto, m.criado_em
+          FROM mensagem m
+          JOIN conversa c ON c.id = m.conversa_id
+         WHERE (sqlc.narg(caixa_id)::bigint IS NULL OR c.caixa_id = sqlc.narg(caixa_id)::bigint)
+           AND m.excluida_em IS NULL
+           AND m.texto IS NOT NULL
+           AND translate(lower(m.texto), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc')
+               LIKE '%' || translate(lower(sqlc.arg(termo)::text), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc') || '%'
+         ORDER BY m.conversa_id, m.criado_em DESC, m.id DESC
+       ) achada
+ ORDER BY achada.criado_em DESC, achada.id DESC
+ LIMIT sqlc.arg(limite);

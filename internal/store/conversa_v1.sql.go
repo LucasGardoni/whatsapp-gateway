@@ -85,6 +85,70 @@ func (q *Queries) BuscarMidiaDaMensagem(ctx context.Context, arg BuscarMidiaDaMe
 	return i, err
 }
 
+const buscarTextoNasConversas = `-- name: BuscarTextoNasConversas :many
+SELECT achada.conversa_id, achada.id, achada.direcao, achada.tipo, achada.texto, achada.criado_em
+  FROM (
+        SELECT DISTINCT ON (m.conversa_id) m.conversa_id, m.id, m.direcao, m.tipo, m.texto, m.criado_em
+          FROM mensagem m
+          JOIN conversa c ON c.id = m.conversa_id
+         WHERE ($1::bigint IS NULL OR c.caixa_id = $1::bigint)
+           AND m.excluida_em IS NULL
+           AND m.texto IS NOT NULL
+           AND translate(lower(m.texto), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc')
+               LIKE '%' || translate(lower($2::text), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc') || '%'
+         ORDER BY m.conversa_id, m.criado_em DESC, m.id DESC
+       ) achada
+ ORDER BY achada.criado_em DESC, achada.id DESC
+ LIMIT $3
+`
+
+type BuscarTextoNasConversasParams struct {
+	CaixaID *int64 `json:"caixa_id"`
+	Termo   string `json:"termo"`
+	Limite  int32  `json:"limite"`
+}
+
+type BuscarTextoNasConversasRow struct {
+	ConversaID int64            `json:"conversa_id"`
+	ID         int64            `json:"id"`
+	Direcao    string           `json:"direcao"`
+	Tipo       string           `json:"tipo"`
+	Texto      *string          `json:"texto"`
+	CriadoEm   pgtype.Timestamp `json:"criado_em"`
+}
+
+// Busca por palavra no texto das mensagens: a ultima mensagem que casa em
+// cada conversa, mais recente primeiro. Sem acento e sem caixa pelo mesmo
+// translate(lower()) dos dois lados -- sem depender de unaccent. O termo ja
+// chega com % _ \ escapados. Mensagem apagada fica de fora: a tela nao
+// mostra o texto dela. Sem indice de texto: varre as mensagens da caixa.
+func (q *Queries) BuscarTextoNasConversas(ctx context.Context, arg BuscarTextoNasConversasParams) ([]BuscarTextoNasConversasRow, error) {
+	rows, err := q.db.Query(ctx, buscarTextoNasConversas, arg.CaixaID, arg.Termo, arg.Limite)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BuscarTextoNasConversasRow
+	for rows.Next() {
+		var i BuscarTextoNasConversasRow
+		if err := rows.Scan(
+			&i.ConversaID,
+			&i.ID,
+			&i.Direcao,
+			&i.Tipo,
+			&i.Texto,
+			&i.CriadoEm,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listarConversas = `-- name: ListarConversas :many
 WITH ultima_por_conversa AS MATERIALIZED (
     SELECT u.conversa_id, u.id, u.direcao, u.tipo, u.texto, u.status, u.criado_em

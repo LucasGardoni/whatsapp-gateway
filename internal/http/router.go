@@ -247,6 +247,8 @@ func NovoRouter(
 			// Sem elas o CRM que consome o barramento nao tinha como saber
 			// o conversa_id que POST /v1/mensagens exige.
 			r.Get("/v1/conversas", conversas.Listar)
+			// busca por palavra no texto das mensagens (filtro do Nexo).
+			r.Get("/v1/conversas/busca", conversas.Buscar)
 			r.Get("/v1/conversas/{id}/mensagens", conversas.Mensagens)
 			// G10: o arquivo de uma mensagem, para a aplicacao mostrar o anexo.
 			r.Get("/v1/conversas/{id}/mensagens/{mensagem_id}/midia", conversas.Midia)
