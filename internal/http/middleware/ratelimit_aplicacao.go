@@ -2,8 +2,10 @@ package middleware
 
 import (
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -20,8 +22,15 @@ import (
 // Roda DEPOIS de AutenticadorAplicacao, e depende disso: sem aplicacao no
 // contexto ele deixa passar, porque nao ha o que limitar e recusar aqui
 // esconderia o 401 que o proximo handler ja daria.
+//
+// A conta e um balde de fichas, e nao a janela fixa do limite por IP: o
+// balde comeca cheio (max fichas, a rajada que cabe) e volta a encher a
+// max/janela por segundo. Com janela fixa, uma rajada legitima (um
+// evento que faz todas as telas abertas relerem ao mesmo tempo) gastava o
+// minuto inteiro em segundos e a aplicacao ficava recusada ate o minuto
+// virar; com o balde ela volta a andar no ritmo medio permitido.
 type LimitePorAplicacao struct {
-	janela janelaFixa
+	balde baldeDeFichas
 	// maxPadrao vale para quem nao tem limite proprio em
 	// aplicacao.limite_requisicoes_por_minuto. <= 0 desliga o limite
 	// (fail open), mesmo contrato de NovoLimiteRequisicoes.
@@ -29,7 +38,65 @@ type LimitePorAplicacao struct {
 }
 
 func NovoLimitePorAplicacao(maxPadrao int, janela time.Duration) *LimitePorAplicacao {
-	return &LimitePorAplicacao{janela: novaJanelaFixa(janela), maxPadrao: maxPadrao}
+	return &LimitePorAplicacao{balde: novoBaldeDeFichas(janela), maxPadrao: maxPadrao}
+}
+
+// baldeDeFichas: por chave, ate max fichas, repostas a max/janela por
+// segundo. Mesma media da janela fixa (max por janela), sem o "apagao"
+// depois da rajada. Em memoria e por instancia, como a janela fixa.
+type baldeDeFichas struct {
+	mu     sync.Mutex
+	janela time.Duration
+	baldes map[string]*balde
+	agora  func() time.Time
+}
+
+type balde struct {
+	fichas float64
+	em     time.Time
+}
+
+func novoBaldeDeFichas(janela time.Duration) baldeDeFichas {
+	return baldeDeFichas{janela: janela, baldes: make(map[string]*balde), agora: time.Now}
+}
+
+// permitir gasta uma ficha da chave; sem ficha, devolve false e quanto
+// falta para a proxima.
+func (b *baldeDeFichas) permitir(chave string, max int) (bool, time.Duration) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	agora := b.agora()
+	porSegundo := float64(max) / b.janela.Seconds()
+	bd, existe := b.baldes[chave]
+
+	if !existe {
+		if len(b.baldes) >= limiteMapaAntesDeLimpar {
+			b.limparCheios(agora)
+		}
+		bd = &balde{fichas: float64(max), em: agora}
+		b.baldes[chave] = bd
+	}
+
+	bd.fichas = math.Min(float64(max), bd.fichas+agora.Sub(bd.em).Seconds()*porSegundo)
+	bd.em = agora
+
+	if bd.fichas >= 1 {
+		bd.fichas--
+		return true, 0
+	}
+
+	return false, time.Duration((1 - bd.fichas) / porSegundo * float64(time.Second))
+}
+
+// limparCheios tira as chaves paradas ha uma janela inteira: o balde delas
+// ja estaria cheio, que e o mesmo que nao existir.
+func (b *baldeDeFichas) limparCheios(agora time.Time) {
+	for chave, bd := range b.baldes {
+		if agora.Sub(bd.em) >= b.janela {
+			delete(b.baldes, chave)
+		}
+	}
 }
 
 // Middleware conta por codigo de aplicacao e usa o teto que a LINHA da
@@ -53,14 +120,14 @@ func (l *LimitePorAplicacao) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		if !l.janela.permitir(app.Codigo, max) {
+		if ok, espera := l.balde.permitir(app.Codigo, max); !ok {
 			// Warn e nao Info: 429 por aplicacao e quase sempre bug de
 			// integracao do outro lado, e quem opera o gateway e o unico
 			// que consegue ver. Sem esta linha, o sintoma do outro lado e
 			// "o gateway esta lento" e nao ha nada no log que explique.
 			slog.Warn("rate limit por aplicacao estourado",
 				"aplicacao", app.Codigo, "limite_por_minuto", max, "rota", r.URL.Path)
-			responder429(w, l.janela.janela)
+			responder429(w, espera)
 			return
 		}
 
@@ -73,11 +140,12 @@ func (l *LimitePorAplicacao) Middleware(next http.Handler) http.Handler {
 // laco -- transformando a protecao na causa da carga que ela existe para
 // conter.
 //
-// A janela inteira, e nao o que resta dela: o que resta depende de quando
-// a janela desta chave comecou, e devolver isso diria a um estranho o
-// ritmo de quem mais bate no mesmo endpoint.
+// No limite por IP vai a janela inteira, e nao o que resta dela: o que
+// resta diria a um estranho o ritmo de quem mais bate no mesmo endpoint.
+// No limite por aplicacao vai a espera ate a proxima ficha -- quem recebe
+// e a propria aplicacao autenticada, e o numero e o que ela precisa.
 func responder429(w http.ResponseWriter, janela time.Duration) {
-	segundos := int(janela.Seconds())
+	segundos := int(math.Ceil(janela.Seconds()))
 	if segundos < 1 {
 		segundos = 1
 	}
